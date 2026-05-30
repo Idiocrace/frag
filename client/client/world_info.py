@@ -3,16 +3,23 @@
 Forge/NeoForge worlds save the list of mods active at last save into level.dat
 under various keys (the schema has shifted across versions). We load the file
 and walk the NBT tree to find any mod-list-shaped data — robust to schema drift.
+
+If the Frag companion mod is installed it writes a richer JSON snapshot to
+``<world>/frag/world-info.json``; that file is preferred when present because
+recent NeoForge versions no longer persist a usable mod registry in level.dat.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import nbtlib
+
+FRAG_INFO_REL = Path("frag") / "world-info.json"
 
 
 @dataclass
@@ -109,8 +116,57 @@ def _detect_loader(root: dict, mods: list[dict]) -> str:
     return ""
 
 
+def _read_frag_companion(world_dir: Path, info: WorldInfo) -> bool:
+    """Populate `info` from the Frag mod's world-info.json if present. Returns True on success."""
+    companion = world_dir / FRAG_INFO_REL
+    if not companion.is_file():
+        return False
+    try:
+        data = json.loads(companion.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        info.note = f"Frag companion file unreadable ({e}); falling back to level.dat."
+        return False
+
+    mc = data.get("minecraft") or {}
+    loader = data.get("loader") or {}
+    world = data.get("world") or {}
+    mods = data.get("mods") or []
+
+    info.name = str(world.get("name", info.name))
+    info.mc_version = str(mc.get("version", ""))
+    info.mc_data_version = int(mc.get("data_version", 0) or 0)
+    info.loader = str(loader.get("name", "neoforge"))
+    info.mods = [
+        {"modid": str(m.get("mod_id", "")), "version": str(m.get("version", ""))}
+        for m in mods
+        if m.get("mod_id")
+    ]
+    info.mods.sort(key=lambda m: m["modid"].lower())
+    info.note = "Loaded from Frag mod world-info.json."
+    return True
+
+
 def read_world(world_dir: Path) -> WorldInfo:
     info = WorldInfo(path=world_dir, name=world_dir.name)
+
+    # Prefer the Frag mod's companion file when it's there — it's authoritative.
+    if _read_frag_companion(world_dir, info):
+        # Still try to pull LastPlayed from level.dat for the UI's "last played" chip,
+        # since the companion file doesn't track it.
+        level_dat = world_dir / "level.dat"
+        if level_dat.is_file():
+            try:
+                nbt_file = nbtlib.load(str(level_dat))
+                root = _to_py(nbt_file.root if hasattr(nbt_file, "root") else nbt_file)
+                if isinstance(root, dict):
+                    if "Data" not in root and "" in root and isinstance(root[""], dict):
+                        root = root[""]
+                    data = root.get("Data") if isinstance(root.get("Data"), dict) else root
+                    info.last_played_ms = int(data.get("LastPlayed", 0) or 0)
+            except (OSError, ValueError, EOFError):
+                pass
+        return info
+
     level_dat = world_dir / "level.dat"
     if not level_dat.is_file():
         info.note = "No level.dat — not a Minecraft world directory."

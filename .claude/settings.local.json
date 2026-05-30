@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Select-Object -First 100 FullName)",
+      "Bash(find ~/.gradle -name \"neoforge-21.1*\" -type d 2>/dev/null | head -5; find ~/.gradle -path \"*neoforge*\" -name \"*.jar\" 2>/dev/null | head -5)",
+      "Read(//c/Users/Harvey Jass/.gradle/**)",
+      "Bash(unzip -p \"/c/Users/Harvey Jass/.gradle/caches/modules-2/files-2.1/net.neoforged/neoforge/21.1.233/d5d7bc199775d60b364960c45079595739d75081/neoforge-21.1.233-sources.jar\" net/neoforged/fml/loading/FMLLoader.java)",
+      "Bash(unzip -l \"/c/Users/Harvey Jass/.gradle/caches/modules-2/files-2.1/net.neoforged/neoforge/21.1.233/d5d7bc199775d60b364960c45079595739d75081/neoforge-21.1.233-sources.jar\")",
+      "Bash(unzip -p \"/c/Users/Harvey Jass/.gradle/caches/modules-2/files-2.1/net.neoforged/neoforge/21.1.233/c326c0c82f02863c16683818c0ffbb7d519697c/neoforge-21.1.233-userdev.jar\")",
+      "Bash(unzip -l \"/c/Users/Harvey Jass/.gradle/caches/modules-2/files-2.1/net.neoforged/neoforge/21.1.233/c326c0c82f02863c16683818c0ffbb7d519697c/neoforge-21.1.233-userdev.jar\")",
+      "Bash(find ~/.gradle/caches/neoForm* -name \"*.jar\")"
+    ]
+  }
+}
