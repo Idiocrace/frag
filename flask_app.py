@@ -16,9 +16,11 @@ app = Flask("frag_backend_v1")
 SECRET_KEY = os.environ.get("FRAG_SECRET_KEY", "SecretKeyForFrag!!!v1:3anda<3")
 
 USER_DATA_ROOT = Path(os.environ.get("FRAG_USER_DATA_ROOT", "userdata")).resolve()
-MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB per file
+MAX_FILE_BYTES = int(os.environ.get("FRAG_MAX_FILE_BYTES", 2 * 1024 * 1024 * 1024))  # default 2 GB
 DOWNLOAD_TIMEOUT = 30
 USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_BYTES
 
 
 def user_dir(user_id: str) -> Path:
@@ -132,12 +134,12 @@ def _download_zip(url: str, dest_dir: Path) -> str:
                 if not chunk:
                     continue
                 total += len(chunk)
-                if total > MAX_DOWNLOAD_BYTES:
+                if total > MAX_FILE_BYTES:
                     fh.close()
                     dest.unlink(missing_ok=True)
                     abort(
                         413,
-                        description=f"File exceeds {MAX_DOWNLOAD_BYTES} bytes: {url}",
+                        description=f"File exceeds {MAX_FILE_BYTES} bytes: {url}",
                     )
                 fh.write(chunk)
 
@@ -183,6 +185,45 @@ def save_data():
     )
 
 
+@app.route("/frag/v1/upload", methods=["POST"])
+@user_agent_required
+@token_required
+def upload_file():
+    user_id = g.user["user_id"]
+    upload = request.files.get("file")
+
+    if upload is None or not upload.filename:
+        return jsonify({
+            "error": "Bad Request",
+            "message": "Multipart field 'file' is required.",
+        }), 400
+
+    filename = secure_filename(upload.filename)
+    if not filename.lower().endswith(".zip"):
+        filename += ".zip"
+
+    dest_dir = user_dir(user_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / filename
+
+    upload.save(dest)
+
+    size = dest.stat().st_size
+    if size > MAX_FILE_BYTES:
+        dest.unlink(missing_ok=True)
+        return jsonify({
+            "error": "Payload Too Large",
+            "message": f"File exceeds {MAX_FILE_BYTES} bytes.",
+        }), 413
+
+    return jsonify({
+        "message": "Upload successful",
+        "user_id": user_id,
+        "filename": filename,
+        "size": size,
+    })
+
+
 @app.route("/frag/v1/files/", methods=["GET"])
 @app.route("/frag/v1/files/<path:filename>", methods=["GET"])
 @user_agent_required
@@ -198,6 +239,26 @@ def get_file(filename: str = ""):
         return jsonify({"user_id": user_id, "files": files})
 
     return send_from_directory(dest_dir, filename, as_attachment=True)
+
+
+@app.route("/frag/v1/files/<path:filename>", methods=["DELETE"])
+@user_agent_required
+@token_required
+def delete_file(filename: str):
+    user_id = g.user["user_id"]
+    dest_dir = user_dir(user_id).resolve()
+    target = (dest_dir / filename).resolve()
+
+    try:
+        target.relative_to(dest_dir)
+    except ValueError:
+        abort(403)
+
+    if not target.is_file():
+        abort(404)
+
+    target.unlink()
+    return jsonify({"message": "Deleted", "filename": filename})
 
 
 @app.route("/healthz", methods=["GET"])
