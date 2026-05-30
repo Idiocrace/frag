@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import PIL; print\\(PIL.__version__\\)\")",
+      "Bash(pip show *)",
+      "Bash(python tools/make_icon.py)",
+      "Bash(pip install *)",
+      "Bash(python -c \"import nbtlib; print\\(nbtlib.__version__\\)\")",
+      "Bash(grep -i \"from PIL\\\\|import PIL\" \"C:\\\\Users\\\\Harvey Jass\\\\AppData\\\\Roaming\\\\Python\\\\Python313\\\\site-packages\\\\customtkinter\\\\windows\\\\widgets\\\\image\\\\ctk_image.py\")",
+      "Read(//c/Users/Harvey Jass/AppData/Roaming/Python/Python313/site-packages/customtkinter/windows/widgets/image/**)"
+    ]
+  }
+}
