@@ -18,4 +18,4 @@ USER app
 
 EXPOSE 8080
 
-CMD exec gunicorn --bind :$PORT --workers 2 --threads 8 --timeout 0 flask_app:app
+CMD exec gunicorn --bind :$PORT --workers 2 --threads 8 --timeout 120 flask_app:app

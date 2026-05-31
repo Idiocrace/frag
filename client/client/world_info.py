@@ -1,12 +1,17 @@
-"""Inspect a Minecraft world's level.dat for mod information.
+"""Inspect a Minecraft world.
 
-Forge/NeoForge worlds save the list of mods active at last save into level.dat
-under various keys (the schema has shifted across versions). We load the file
-and walk the NBT tree to find any mod-list-shaped data — robust to schema drift.
+Two data sources, in priority order:
 
-If the Frag companion mod is installed it writes a richer JSON snapshot to
-``<world>/frag/world-info.json``; that file is preferred when present because
-recent NeoForge versions no longer persist a usable mod registry in level.dat.
+1. ``<world>/frag/world-info.json`` — written by the Frag NeoForge mod on
+   server-started and on every overworld save. Authoritative: includes display
+   names, descriptions, loader version, gamerules, dimension list.
+
+2. ``<world>/level.dat`` — gzip-compressed NBT. We walk it looking for any
+   compound that resembles a mod entry. Tolerant of Forge/NeoForge schema drift
+   but does not work on recent NeoForge (no mod registry persisted).
+
+A world that has neither yields an info object with ``source == "none"`` and
+a human-readable ``note``.
 """
 
 from __future__ import annotations
@@ -19,19 +24,58 @@ from typing import Any
 
 import nbtlib
 
-FRAG_INFO_REL = Path("frag") / "world-info.json"
+WORLD_INFO_DIR = "frag"
+WORLD_INFO_FILE = "world-info.json"
+
+
+@dataclass
+class Mod:
+    mod_id: str
+    display_name: str = ""
+    version: str = ""
+    description: str = ""
+    namespace: str = ""
+    loader: str = ""
+
+    @property
+    def best_name(self) -> str:
+        return self.display_name or self.mod_id
 
 
 @dataclass
 class WorldInfo:
     path: Path
     name: str = ""
-    mc_version: str = ""              # e.g. "1.20.4"
+    source: str = "none"          # "frag-mod" | "level.dat" | "none"
+    note: str = ""                # human-readable explanation when source is sparse
+
+    # Minecraft / loader
+    mc_version: str = ""          # e.g. "1.21.1"
     mc_data_version: int = 0
+    mc_release_target: str = ""
+    loader: str = ""              # "neoforge" | "forge" | ""
+    loader_version: str = ""
+    fml_version: str = ""
+
+    # World state
+    seed: int | None = None
+    game_time: int = 0
+    day_time: int = 0
+    difficulty: str = ""
+    hardcore: bool = False
+    game_type: str = ""
+    allow_commands: bool = False
+    gamerules: dict[str, str] = field(default_factory=dict)
+    dimensions: list[str] = field(default_factory=list)
     last_played_ms: int = 0
-    loader: str = ""                  # "forge", "neoforge", or ""
-    mods: list[dict] = field(default_factory=list)  # [{modid, version}, ...]
-    note: str = ""                    # human-readable reason if mods couldn't be read
+
+    mods: list[Mod] = field(default_factory=list)
+
+    # ---- formatted views ----------------------------------------------------
+
+    @property
+    def mod_count(self) -> int:
+        return len(self.mods)
 
     @property
     def last_played(self) -> str:
@@ -45,17 +89,189 @@ class WorldInfo:
             return ""
 
     @property
-    def mod_count(self) -> int:
-        return len(self.mods)
+    def source_label(self) -> str:
+        return {
+            "frag-mod": "Frag mod",
+            "level.dat": "level.dat",
+            "none": "none",
+        }.get(self.source, self.source)
+
+
+# ---- public entrypoint -------------------------------------------------------
+
+
+def read_world(world_dir: Path) -> WorldInfo:
+    info = WorldInfo(path=world_dir, name=world_dir.name)
+
+    if not world_dir.is_dir():
+        info.note = "Not a directory."
+        return info
+
+    if _read_from_frag_mod(world_dir, info):
+        return info
+    if _read_from_level_dat(world_dir, info):
+        return info
+
+    if not info.note:
+        info.note = "No level.dat — not a Minecraft world directory."
+    return info
+
+
+# ---- frag-mod source ---------------------------------------------------------
+
+
+def _read_from_frag_mod(world_dir: Path, info: WorldInfo) -> bool:
+    path = world_dir / WORLD_INFO_DIR / WORLD_INFO_FILE
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        info.note = f"Found frag/world-info.json but couldn't parse it ({e})."
+        return False
+
+    info.source = "frag-mod"
+
+    mc = data.get("minecraft") or {}
+    info.mc_version = str(mc.get("version") or "")
+    info.mc_data_version = int(mc.get("data_version") or 0)
+    info.mc_release_target = str(mc.get("release_target") or "")
+
+    loader = data.get("loader") or {}
+    info.loader = str(loader.get("name") or "")
+    info.loader_version = str(loader.get("version") or "")
+    info.fml_version = str(loader.get("fml_version") or "")
+
+    world = data.get("world") or {}
+    info.name = str(world.get("name") or info.name)
+    seed = world.get("seed")
+    info.seed = int(seed) if isinstance(seed, (int, float)) else None
+    info.game_time = int(world.get("game_time") or 0)
+    info.day_time = int(world.get("day_time") or 0)
+    info.difficulty = str(world.get("difficulty") or "")
+    info.hardcore = bool(world.get("hardcore"))
+    info.game_type = str(world.get("game_type") or "")
+    info.allow_commands = bool(world.get("allow_commands"))
+    info.gamerules = {str(k): str(v) for k, v in (world.get("gamerules") or {}).items()}
+    info.dimensions = [str(d) for d in (world.get("dimensions") or [])]
+
+    for entry in data.get("mods") or []:
+        if not isinstance(entry, dict):
+            continue
+        info.mods.append(
+            Mod(
+                mod_id=str(entry.get("mod_id") or ""),
+                display_name=str(entry.get("display_name") or ""),
+                version=str(entry.get("version") or ""),
+                description=str(entry.get("description") or "").strip(),
+                namespace=str(entry.get("namespace") or ""),
+                loader=str(entry.get("loader") or ""),
+            )
+        )
+    info.mods.sort(key=lambda m: m.mod_id.lower())
+
+    # last_played still comes from level.dat (the mod doesn't write it)
+    _enrich_with_level_dat_timestamp(world_dir, info)
+    return True
+
+
+def _enrich_with_level_dat_timestamp(world_dir: Path, info: WorldInfo) -> None:
+    level_dat = world_dir / "level.dat"
+    if not level_dat.is_file():
+        return
+    try:
+        nbt_file = nbtlib.load(str(level_dat))
+    except (OSError, ValueError, EOFError):
+        return
+    root = _to_py(nbt_file.root if hasattr(nbt_file, "root") else nbt_file)
+    data = _unwrap_data(root)
+    info.last_played_ms = int(data.get("LastPlayed", 0) or 0)
+
+
+# ---- level.dat fallback ------------------------------------------------------
+
+
+def _read_from_level_dat(world_dir: Path, info: WorldInfo) -> bool:
+    level_dat = world_dir / "level.dat"
+    if not level_dat.is_file():
+        return False
+
+    try:
+        nbt_file = nbtlib.load(str(level_dat))
+    except (OSError, ValueError, EOFError) as e:
+        info.note = f"Could not read level.dat ({e})."
+        info.source = "none"
+        return True
+
+    root = _to_py(nbt_file.root if hasattr(nbt_file, "root") else nbt_file)
+    if not isinstance(root, dict):
+        info.note = "Unexpected level.dat structure."
+        info.source = "none"
+        return True
+
+    info.source = "level.dat"
+    data = _unwrap_data(root)
+
+    info.name = str(data.get("LevelName", info.name))
+    info.last_played_ms = int(data.get("LastPlayed", 0) or 0)
+    info.mc_data_version = int(data.get("DataVersion", 0) or 0)
+    version_block = data.get("Version")
+    if isinstance(version_block, dict):
+        info.mc_version = str(version_block.get("Name", ""))
+
+    info.mods = _collect_mods_from_nbt(data)
+    info.loader = _detect_loader_from_nbt(data, info.mods)
+    if not info.mods:
+        info.note = (
+            "No mod registry found in level.dat. Vanilla world, or a newer "
+            "NeoForge that doesn't persist mod info here — install the Frag "
+            "mod for richer data."
+        )
+    return True
+
+
+def _unwrap_data(root: dict) -> dict:
+    # level.dat shape: { "": { "Data": { ... } } } or { "Data": { ... } }
+    if "Data" not in root and "" in root and isinstance(root[""], dict):
+        root = root[""]
+    data = root.get("Data") if isinstance(root.get("Data"), dict) else root
+    return data if isinstance(data, dict) else {}
+
+
+def _collect_mods_from_nbt(root: dict) -> list[Mod]:
+    seen: set[tuple[str, str]] = set()
+    mods: list[Mod] = []
+    for _path, node in _walk_compounds(root):
+        entry = _looks_like_mod_entry(node)
+        if entry and entry not in seen:
+            seen.add(entry)
+            mods.append(Mod(mod_id=entry[0], version=entry[1]))
+    mods.sort(key=lambda m: m.mod_id.lower())
+    return mods
+
+
+def _detect_loader_from_nbt(root: dict, mods: list[Mod]) -> str:
+    keys_blob = " ".join(
+        "/".join(p).lower() for p, _ in _walk_compounds(root)
+    )
+    if "neoforge" in keys_blob:
+        return "neoforge"
+    if "fml" in keys_blob or "forge" in keys_blob:
+        return "forge"
+    if any(m.mod_id.lower() in ("forge", "neoforge") for m in mods):
+        return "forge"
+    return ""
+
+
+# ---- NBT walk helpers --------------------------------------------------------
 
 
 def _to_py(node: Any) -> Any:
-    """Recursively convert nbtlib tags to plain Python primitives for lookups."""
     if isinstance(node, nbtlib.tag.Compound):
         return {str(k): _to_py(v) for k, v in node.items()}
     if isinstance(node, (nbtlib.tag.List, list, tuple)):
         return [_to_py(x) for x in node]
-    if isinstance(node, (nbtlib.tag.String,)):
+    if isinstance(node, nbtlib.tag.String):
         return str(node)
     if isinstance(node, (nbtlib.tag.Byte, nbtlib.tag.Short, nbtlib.tag.Int, nbtlib.tag.Long)):
         return int(node)
@@ -65,7 +281,6 @@ def _to_py(node: Any) -> Any:
 
 
 def _walk_compounds(node: Any, path: tuple[str, ...] = ()):
-    """Yield (path, dict) for every compound-shaped node in the tree."""
     if isinstance(node, dict):
         yield path, node
         for k, v in node.items():
@@ -76,133 +291,12 @@ def _walk_compounds(node: Any, path: tuple[str, ...] = ()):
 
 
 def _looks_like_mod_entry(d: dict) -> tuple[str, str] | None:
-    """If d looks like a single mod entry, return (modid, version). Else None."""
     if not isinstance(d, dict):
         return None
-    # Tolerate the various key spellings Forge and NeoForge have used.
-    modid_keys = ("ModId", "modId", "modid", "ModID")
+    modid_keys = ("ModId", "modId", "modid", "ModID", "mod_id")
     version_keys = ("ModVersion", "modVersion", "modversion", "version", "Version")
     modid = next((str(d[k]) for k in modid_keys if k in d), None)
     if not modid:
         return None
     version = next((str(d[k]) for k in version_keys if k in d), "")
     return modid, version
-
-
-def _collect_mods(root: dict) -> list[dict]:
-    """Find any mod-list-shaped data anywhere in the NBT tree."""
-    seen: set[tuple[str, str]] = set()
-    mods: list[dict] = []
-    for _path, node in _walk_compounds(root):
-        entry = _looks_like_mod_entry(node)
-        if entry and entry not in seen:
-            seen.add(entry)
-            mods.append({"modid": entry[0], "version": entry[1]})
-    mods.sort(key=lambda m: m["modid"].lower())
-    return mods
-
-
-def _detect_loader(root: dict, mods: list[dict]) -> str:
-    flat_keys: list[str] = []
-    for path, _node in _walk_compounds(root):
-        flat_keys.append("/".join(path).lower())
-    blob = " ".join(flat_keys)
-    if "neoforge" in blob:
-        return "neoforge"
-    if "fml" in blob or "forge" in blob:
-        return "forge"
-    if any(m["modid"].lower() in ("minecraft", "forge", "neoforge") for m in mods):
-        return "forge"
-    return ""
-
-
-def _read_frag_companion(world_dir: Path, info: WorldInfo) -> bool:
-    """Populate `info` from the Frag mod's world-info.json if present. Returns True on success."""
-    companion = world_dir / FRAG_INFO_REL
-    if not companion.is_file():
-        return False
-    try:
-        data = json.loads(companion.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        info.note = f"Frag companion file unreadable ({e}); falling back to level.dat."
-        return False
-
-    mc = data.get("minecraft") or {}
-    loader = data.get("loader") or {}
-    world = data.get("world") or {}
-    mods = data.get("mods") or []
-
-    info.name = str(world.get("name", info.name))
-    info.mc_version = str(mc.get("version", ""))
-    info.mc_data_version = int(mc.get("data_version", 0) or 0)
-    info.loader = str(loader.get("name", "neoforge"))
-    info.mods = [
-        {"modid": str(m.get("mod_id", "")), "version": str(m.get("version", ""))}
-        for m in mods
-        if m.get("mod_id")
-    ]
-    info.mods.sort(key=lambda m: m["modid"].lower())
-    info.note = "Loaded from Frag mod world-info.json."
-    return True
-
-
-def read_world(world_dir: Path) -> WorldInfo:
-    info = WorldInfo(path=world_dir, name=world_dir.name)
-
-    # Prefer the Frag mod's companion file when it's there — it's authoritative.
-    if _read_frag_companion(world_dir, info):
-        # Still try to pull LastPlayed from level.dat for the UI's "last played" chip,
-        # since the companion file doesn't track it.
-        level_dat = world_dir / "level.dat"
-        if level_dat.is_file():
-            try:
-                nbt_file = nbtlib.load(str(level_dat))
-                root = _to_py(nbt_file.root if hasattr(nbt_file, "root") else nbt_file)
-                if isinstance(root, dict):
-                    if "Data" not in root and "" in root and isinstance(root[""], dict):
-                        root = root[""]
-                    data = root.get("Data") if isinstance(root.get("Data"), dict) else root
-                    info.last_played_ms = int(data.get("LastPlayed", 0) or 0)
-            except (OSError, ValueError, EOFError):
-                pass
-        return info
-
-    level_dat = world_dir / "level.dat"
-    if not level_dat.is_file():
-        info.note = "No level.dat — not a Minecraft world directory."
-        return info
-
-    try:
-        nbt_file = nbtlib.load(str(level_dat))
-    except (OSError, ValueError, EOFError) as e:
-        info.note = f"Could not read level.dat ({e})."
-        return info
-
-    root = _to_py(nbt_file.root if hasattr(nbt_file, "root") else nbt_file)
-    if not isinstance(root, dict):
-        info.note = "Unexpected level.dat structure."
-        return info
-
-    # level.dat shape: { "": { "Data": { ... } } } or { "Data": { ... } }
-    if "Data" not in root and "" in root and isinstance(root[""], dict):
-        root = root[""]
-    data = root.get("Data") if isinstance(root.get("Data"), dict) else root
-
-    info.name = str(data.get("LevelName", info.name))
-    info.last_played_ms = int(data.get("LastPlayed", 0) or 0)
-    info.mc_data_version = int(data.get("DataVersion", 0) or 0)
-    version_block = data.get("Version")
-    if isinstance(version_block, dict):
-        info.mc_version = str(version_block.get("Name", ""))
-
-    info.mods = _collect_mods(data)
-    info.loader = _detect_loader(data, info.mods)
-
-    if not info.mods:
-        info.note = (
-            "No mod registry found in level.dat. Vanilla world, or the loader "
-            "doesn't persist mod info there (some NeoForge versions store it "
-            "elsewhere)."
-        )
-
-    return info

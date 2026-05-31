@@ -1,5 +1,3 @@
 {
-  "itemGroup.frag": "Example Mod Tab",
-  "block.frag.example_block": "Example Block",
-  "item.frag.example_item": "Example Item"
+  "mod.frag.description": "Bridges your world data to the Frag mod manager."
 }

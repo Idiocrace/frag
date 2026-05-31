@@ -1,8 +1,8 @@
 import os
 import re
 import jwt
+import time
 import datetime
-import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 from functools import wraps
@@ -10,14 +10,18 @@ from functools import wraps
 import requests
 from werkzeug.utils import secure_filename
 from flask import Flask, request, jsonify, abort, redirect, send_from_directory, g
+from auth import validate_token
 
 app = Flask("frag_backend_v1")
 
 SECRET_KEY = os.environ.get("FRAG_SECRET_KEY", "SecretKeyForFrag!!!v1:3anda<3")
 
 USER_DATA_ROOT = Path(os.environ.get("FRAG_USER_DATA_ROOT", "userdata")).resolve()
-MAX_FILE_BYTES = int(os.environ.get("FRAG_MAX_FILE_BYTES", 2 * 1024 * 1024 * 1024))  # default 2 GB
+MAX_FILE_BYTES = int(
+    os.environ.get("FRAG_MAX_FILE_BYTES", 2 * 1024 * 1024 * 1024)
+)  # default 2 GB
 DOWNLOAD_TIMEOUT = 30
+DOWNLOAD_WALL_TIMEOUT = 300  # 5 minutes total per file
 USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_BYTES
@@ -93,12 +97,7 @@ def authenticate():
             {"error": "Bad Request.", "message": "Missing token parameter."}
         ), 400
 
-    # external validation step
-    result = subprocess.run(
-        ["python", "auth.py", "validate", token], capture_output=True, text=True
-    )
-
-    if result.stdout.strip() != "valid":
+    if not validate_token(token):
         return jsonify({"error": "Unauthorized.", "message": "Invalid token."}), 401
 
     jwt_token = create_token(token)
@@ -126,11 +125,16 @@ def _download_zip(url: str, dest_dir: Path) -> str:
 
     dest = dest_dir / filename
 
+    deadline = time.monotonic() + DOWNLOAD_WALL_TIMEOUT
     with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as resp:
         resp.raise_for_status()
         total = 0
         with open(dest, "wb") as fh:
             for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if time.monotonic() > deadline:
+                    fh.close()
+                    dest.unlink(missing_ok=True)
+                    abort(504, description=f"Download timed out: {url}")
                 if not chunk:
                     continue
                 total += len(chunk)
@@ -193,10 +197,12 @@ def upload_file():
     upload = request.files.get("file")
 
     if upload is None or not upload.filename:
-        return jsonify({
-            "error": "Bad Request",
-            "message": "Multipart field 'file' is required.",
-        }), 400
+        return jsonify(
+            {
+                "error": "Bad Request",
+                "message": "Multipart field 'file' is required.",
+            }
+        ), 400
 
     filename = secure_filename(upload.filename)
     if not filename.lower().endswith(".zip"):
@@ -211,17 +217,21 @@ def upload_file():
     size = dest.stat().st_size
     if size > MAX_FILE_BYTES:
         dest.unlink(missing_ok=True)
-        return jsonify({
-            "error": "Payload Too Large",
-            "message": f"File exceeds {MAX_FILE_BYTES} bytes.",
-        }), 413
+        return jsonify(
+            {
+                "error": "Payload Too Large",
+                "message": f"File exceeds {MAX_FILE_BYTES} bytes.",
+            }
+        ), 413
 
-    return jsonify({
-        "message": "Upload successful",
-        "user_id": user_id,
-        "filename": filename,
-        "size": size,
-    })
+    return jsonify(
+        {
+            "message": "Upload successful",
+            "user_id": user_id,
+            "filename": filename,
+            "size": size,
+        }
+    )
 
 
 @app.route("/frag/v1/files/", methods=["GET"])
@@ -270,4 +280,5 @@ if __name__ == "__main__":
     from waitress import serve
 
     port = int(os.environ.get("PORT", 4543))
+    print(f"Serving on http://0.0.0.0:{port}", flush=True)
     serve(app, host="0.0.0.0", port=port)

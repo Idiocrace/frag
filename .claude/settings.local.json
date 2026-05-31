@@ -8,7 +8,10 @@
       "Bash(unzip -l \"/c/Users/Harvey Jass/.gradle/caches/modules-2/files-2.1/net.neoforged/neoforge/21.1.233/d5d7bc199775d60b364960c45079595739d75081/neoforge-21.1.233-sources.jar\")",
       "Bash(unzip -p \"/c/Users/Harvey Jass/.gradle/caches/modules-2/files-2.1/net.neoforged/neoforge/21.1.233/c326c0c82f02863c16683818c0ffbb7d519697c/neoforge-21.1.233-userdev.jar\")",
       "Bash(unzip -l \"/c/Users/Harvey Jass/.gradle/caches/modules-2/files-2.1/net.neoforged/neoforge/21.1.233/c326c0c82f02863c16683818c0ffbb7d519697c/neoforge-21.1.233-userdev.jar\")",
-      "Bash(find ~/.gradle/caches/neoForm* -name \"*.jar\")"
+      "Bash(find ~/.gradle/caches/neoForm* -name \"*.jar\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); import client; print\\(client.__file__\\)\")",
+      "Bash(ls -la \"c:\\\\\\\\_web\\\\\\\\services\\\\\\\\frag\\\\\\\\client\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

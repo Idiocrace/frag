@@ -787,7 +787,10 @@ class WorldsView(View):
         btn = ghost_button(right, text="Show mods", width=110, state="disabled")
         btn.pack(side="right")
 
-        self._rows[world.name] = {"meta": meta, "btn": btn, "info": None, "cb": cb, "var": var}
+        self._rows[world.name] = {
+            "meta": meta, "btn": btn, "right": right,
+            "info": None, "cb": cb, "var": var,
+        }
 
     def _on_toggle(self, name: str, synced: bool) -> None:
         self.app.cfg.set_world_synced(name, synced)
@@ -834,14 +837,27 @@ class WorldsView(View):
         elif info.mc_data_version:
             parts.append(f"data v{info.mc_data_version}")
         if info.loader:
-            parts.append(info.loader)
+            loader_part = info.loader
+            if info.loader_version:
+                loader_part += f" {info.loader_version}"
+            parts.append(loader_part)
         if info.mods:
             parts.append(f"{info.mod_count} mods")
-        elif info.note:
-            parts.append("vanilla / unknown")
         if info.last_played:
             parts.append(info.last_played)
         row["meta"].configure(text="  ·  ".join(parts))
+
+        # source pill on the right side
+        if "source_pill" in row:
+            row["source_pill"].destroy()
+        if info.source != "none":
+            color, soft = (
+                (SUCCESS, SUCCESS_SOFT) if info.source == "frag-mod"
+                else (TEXT_DIM, SURFACE_HI)
+            )
+            sp = _pill(row["right"], info.source_label, color, soft)
+            sp.pack(side="right", padx=(0, 8))
+            row["source_pill"] = sp
 
         btn = row["btn"]
         if info.mods:
@@ -849,6 +865,8 @@ class WorldsView(View):
                 state="normal",
                 command=lambda n=world_name: self._show_mods_popup(n),
             )
+        elif info.source == "level.dat":
+            btn.configure(text="Install Frag mod", state="disabled")
         else:
             btn.configure(text="No mod data", state="disabled")
 
@@ -860,7 +878,7 @@ class WorldsView(View):
 
         win = ctk.CTkToplevel(self.app, fg_color=BG)
         win.title(f"Frag — {info.name}")
-        win.geometry("560x560")
+        win.geometry("640x640")
         win.transient(self.app)
         try:
             ico = asset(ICON_ICO)
@@ -874,17 +892,44 @@ class WorldsView(View):
         ctk.CTkLabel(header, text=info.name, font=FONT_H1, text_color=TEXT, anchor="w").pack(
             anchor="w"
         )
+
         chips = ctk.CTkFrame(header, fg_color="transparent")
         chips.pack(anchor="w", pady=(8, 0))
         if info.mc_version:
             _pill(chips, f"MC {info.mc_version}", TEXT, SURFACE_ALT).pack(side="left", padx=(0, 6))
         if info.loader:
-            _pill(chips, info.loader, PRIMARY, PRIMARY_SOFT).pack(side="left", padx=(0, 6))
+            loader_text = info.loader
+            if info.loader_version:
+                loader_text += f" {info.loader_version}"
+            _pill(chips, loader_text, PRIMARY, PRIMARY_SOFT).pack(side="left", padx=(0, 6))
         _pill(chips, f"{info.mod_count} mods", ACCENT, ACCENT_SOFT).pack(side="left", padx=(0, 6))
+        if info.source != "none":
+            color, soft = (
+                (SUCCESS, SUCCESS_SOFT) if info.source == "frag-mod"
+                else (TEXT_DIM, SURFACE_HI)
+            )
+            _pill(chips, info.source_label, color, soft).pack(side="left", padx=(0, 6))
+        if info.hardcore:
+            _pill(chips, "hardcore", ERROR, ERROR_SOFT).pack(side="left", padx=(0, 6))
+
+        # Secondary meta line — seed, difficulty, gamerule/dimension counts
+        meta_parts = []
+        if info.seed is not None:
+            meta_parts.append(f"seed {info.seed}")
+        if info.difficulty:
+            meta_parts.append(info.difficulty)
+        if info.game_type:
+            meta_parts.append(info.game_type)
+        if info.gamerules:
+            meta_parts.append(f"{len(info.gamerules)} gamerules")
+        if info.dimensions:
+            meta_parts.append(f"{len(info.dimensions)} dims")
         if info.last_played:
+            meta_parts.append(f"played {info.last_played}")
+        if meta_parts:
             ctk.CTkLabel(
-                header, text=f"last played {info.last_played}",
-                font=FONT_DIM, text_color=TEXT_FAINT,
+                header, text="  ·  ".join(meta_parts),
+                font=FONT_DIM, text_color=TEXT_FAINT, anchor="w",
             ).pack(anchor="w", pady=(8, 0))
 
         body_card = card(win)
@@ -899,13 +944,30 @@ class WorldsView(View):
 
         for mod in info.mods:
             row_frame = HoverRow(body, base=SURFACE, hover=SURFACE_ALT)
-            row_frame.pack(fill="x", padx=2, pady=2)
+            row_frame.pack(fill="x", padx=2, pady=3)
+
+            left = ctk.CTkFrame(row_frame, fg_color="transparent")
+            left.pack(side="left", fill="x", expand=True, padx=14, pady=8)
             ctk.CTkLabel(
-                row_frame, text=mod["modid"], font=FONT_BODY,
+                left, text=mod.best_name, font=FONT_BODY,
                 text_color=TEXT, anchor="w",
-            ).pack(side="left", padx=14, pady=8)
+            ).pack(anchor="w")
+            if mod.display_name and mod.mod_id and mod.display_name != mod.mod_id:
+                ctk.CTkLabel(
+                    left, text=mod.mod_id, font=FONT_TINY,
+                    text_color=TEXT_FAINT, anchor="w",
+                ).pack(anchor="w")
+            if mod.description:
+                desc = mod.description
+                if len(desc) > 140:
+                    desc = desc[:137].rstrip() + "…"
+                ctk.CTkLabel(
+                    left, text=desc, font=FONT_TINY,
+                    text_color=TEXT_DIM, anchor="w", wraplength=420, justify="left",
+                ).pack(anchor="w", pady=(2, 0))
+
             ctk.CTkLabel(
-                row_frame, text=mod.get("version") or "?", font=FONT_MONO,
+                row_frame, text=mod.version or "?", font=FONT_MONO,
                 text_color=TEXT_DIM, anchor="e",
             ).pack(side="right", padx=14, pady=8)
 
