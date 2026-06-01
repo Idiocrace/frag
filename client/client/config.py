@@ -37,9 +37,11 @@ class Config:
 
     # ---- device-local (not synced) -----------------------------------------
     server_url: str = "http://localhost:4543"
-    auth_token: str = ""
-    jwt: str = ""
-    jwt_expires_at: float = 0.0
+    pd_oauth_url: str = "https://pixelateddream.net"
+    access_token: str = ""  # OAuth access token (RS256 JWT)
+    access_token_expires_at: float = 0.0
+    id_token: str = ""  # OAuth ID token
+    refresh_token: str = ""  # OAuth refresh token (if available)
     minecraft_dir: str = ""
     mods_dir: str = ""
     saves_dir: str = ""

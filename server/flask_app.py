@@ -6,6 +6,7 @@ import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 from functools import wraps
+from typing import Optional
 
 import requests
 from werkzeug.utils import secure_filename
@@ -15,6 +16,9 @@ from auth import validate_token
 app = Flask("frag_backend_v1")
 
 SECRET_KEY = os.environ.get("FRAG_SECRET_KEY", "SecretKeyForFrag!!!v1:3anda<3")
+PD_OAUTH_URL = os.environ.get("PD_OAUTH_URL", "https://pixelateddream.net")
+PD_OAUTH_JWKS_CACHE: Optional[dict] = None
+PD_OAUTH_JWKS_CACHE_TIME = 0
 
 USER_DATA_ROOT = Path(os.environ.get("FRAG_USER_DATA_ROOT", "userdata")).resolve()
 MAX_FILE_BYTES = int(
@@ -44,7 +48,51 @@ def user_agent_required(f):
     return wrapper
 
 
+def _get_pd_jwks() -> dict:
+    """Fetch and cache PD OAuth JWKS."""
+    global PD_OAUTH_JWKS_CACHE, PD_OAUTH_JWKS_CACHE_TIME
+    now = time.time()
+    if PD_OAUTH_JWKS_CACHE and (now - PD_OAUTH_JWKS_CACHE_TIME) < 3600:
+        return PD_OAUTH_JWKS_CACHE
+    try:
+        resp = requests.get(f"{PD_OAUTH_URL}/.well-known/jwks.json", timeout=5)
+        resp.raise_for_status()
+        PD_OAUTH_JWKS_CACHE = resp.json()
+        PD_OAUTH_JWKS_CACHE_TIME = now
+        return PD_OAUTH_JWKS_CACHE
+    except Exception:
+        return PD_OAUTH_JWKS_CACHE or {"keys": []}
+
+
+def _verify_pd_oauth_token(token: str) -> dict:
+    """Verify and decode a PD OAuth access token (RS256 JWT)."""
+    try:
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+
+        jwks = _get_pd_jwks()
+        key = None
+        for k in jwks.get("keys", []):
+            if k.get("kid") == kid:
+                key = jwt.algorithms.RSAAlgorithm.from_jwk(__import__("json").dumps(k))
+                break
+
+        if not key:
+            return None
+
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            options={"verify_exp": True}
+        )
+        return claims
+    except jwt.PyJWTError:
+        return None
+
+
 def token_required(f):
+    """Verify bearer token (OAuth JWT from PD or local HS256)."""
     @wraps(f)
     def wrapper(*args, **kwargs):
         auth_header = request.headers.get("Authorization")
@@ -53,15 +101,22 @@ def token_required(f):
             return jsonify({"error": "Missing token"}), 401
 
         token = auth_header.split(" ")[1]
+        data = None
 
-        try:
-            data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        except jwt.ExpiredSignatureError:
-            return jsonify({"error": "Token expired"}), 401
-        except jwt.InvalidTokenError:
+        # Try PD OAuth token first (RS256)
+        data = _verify_pd_oauth_token(token)
+
+        # Fall back to legacy HS256 token
+        if not data:
+            try:
+                data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+                return jsonify({"error": "Invalid or expired token"}), 401
+
+        if not data:
             return jsonify({"error": "Invalid token"}), 401
 
-        g.user = data  # ✅ FIX HERE
+        g.user = data
         return f(*args, **kwargs)
 
     return wrapper

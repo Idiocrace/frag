@@ -11,9 +11,9 @@ import requests
 
 from .config import Config
 
-USER_AGENT = "FragModdingClient/v1"  # server requires this exact UA
+USER_AGENT = "FragModdingClient/v1"
 DEFAULT_TIMEOUT = 30
-JWT_REFRESH_MARGIN = 5 * 60  # refresh if <5min remaining
+TOKEN_REFRESH_MARGIN = 5 * 60  # refresh if <5min remaining
 
 
 class FragAPIError(Exception):
@@ -28,32 +28,27 @@ class FragClient:
 
     # ---- auth ---------------------------------------------------------------
 
-    def _need_auth(self) -> bool:
-        if not self.cfg.jwt:
+    def _need_token_refresh(self) -> bool:
+        """Check if access token is missing or about to expire."""
+        if not self.cfg.access_token:
             return True
-        return time.time() + JWT_REFRESH_MARGIN >= self.cfg.jwt_expires_at
+        return time.time() + TOKEN_REFRESH_MARGIN >= self.cfg.access_token_expires_at
 
-    def authenticate(self, force: bool = False) -> None:
-        if not force and not self._need_auth():
-            return
-        if not self.cfg.auth_token:
-            raise FragAPIError("No auth token set. Configure it in Settings.")
-        url = f"{self.cfg.server_url.rstrip('/')}/frag/v1/authenticate"
-        resp = self.session.post(url, params={"token": self.cfg.auth_token}, timeout=DEFAULT_TIMEOUT)
-        if resp.status_code != 200:
-            raise FragAPIError(self._format_error(resp))
-        data = resp.json()
-        jwt_token = data.get("jwt")
-        if not jwt_token:
-            raise FragAPIError("Server response missing 'jwt'.")
-        self.cfg.jwt = jwt_token
-        # Server-side JWT is 24h; refresh slightly before that
-        self.cfg.jwt_expires_at = time.time() + (24 * 3600) - JWT_REFRESH_MARGIN
-        self.cfg.save()
+    def validate_token(self) -> bool:
+        """Check if we have a valid access token without trying to refresh."""
+        if not self.cfg.access_token:
+            return False
+        if self._need_token_refresh():
+            return False
+        return True
 
     def _authed(self) -> dict:
-        self.authenticate()
-        return {"Authorization": f"Bearer {self.cfg.jwt}"}
+        """Get authorization header with current access token."""
+        if self._need_token_refresh():
+            raise FragAPIError(
+                "Access token missing or expired. Re-authenticate via Settings."
+            )
+        return {"Authorization": f"Bearer {self.cfg.access_token}"}
 
     # ---- low-level ----------------------------------------------------------
 

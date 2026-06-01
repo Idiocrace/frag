@@ -1334,15 +1334,23 @@ class SettingsView(View):
         # Account
         acct = card(wrap)
         acct.pack(fill="x", pady=(0, 16))
-        _section_header(acct, "Account", "Connect to your Frag server.")
+        _section_header(acct, "Account", "Sign in with Pixelated Dream")
         self.url_var = ctk.StringVar(value=self.app.cfg.server_url)
-        self.token_var = ctk.StringVar(value=self.app.cfg.auth_token)
-        _labeled(acct, "Server URL", self.url_var)
-        _labeled(acct, "Auth token", self.token_var, show="●")
+        self.pd_url_var = ctk.StringVar(value=self.app.cfg.pd_oauth_url)
+        _labeled(acct, "Frag Server URL", self.url_var)
+        _labeled(acct, "Pixelated Dream URL", self.pd_url_var)
+
+        # OAuth status
+        self.auth_status = ctk.CTkLabel(
+            acct, text="", font=FONT_DIM, text_color=TEXT_DIM, anchor="w"
+        )
+        self.auth_status.pack(fill="x", padx=22, pady=(10, 4))
+        self._update_auth_status()
+
         btns = ctk.CTkFrame(acct, fg_color="transparent")
         btns.pack(fill="x", padx=22, pady=(10, 20))
-        primary_button(btns, text="Save & test", command=self._save_and_test).pack(side="left")
-        ghost_button(btns, text="Re-authenticate", command=self._reauth).pack(
+        primary_button(btns, text="Sign in with OAuth", command=self._oauth_login).pack(side="left")
+        ghost_button(btns, text="Sign out", command=self._oauth_logout).pack(
             side="left", padx=(8, 0)
         )
         self.account_status = ctk.CTkLabel(
@@ -1420,7 +1428,7 @@ class SettingsView(View):
     def _collect(self) -> None:
         cfg = self.app.cfg
         cfg.server_url = self.url_var.get().strip()
-        cfg.auth_token = self.token_var.get().strip()
+        cfg.pd_oauth_url = self.pd_url_var.get().strip()
         cfg.minecraft_dir = self.mc_var.get().strip()
         cfg.mods_dir = self.mods_var.get().strip()
         cfg.saves_dir = self.saves_var.get().strip()
@@ -1435,31 +1443,81 @@ class SettingsView(View):
         self.app.refresh_connection()
         self.after(2000, lambda: self.save_status.configure(text=""))
 
-    def _save_and_test(self) -> None:
+    def _update_auth_status(self) -> None:
+        """Update the displayed authentication status."""
+        if self.app.cfg.access_token:
+            self.auth_status.configure(
+                text="✓ Authenticated via PD OAuth",
+                text_color=SUCCESS
+            )
+        else:
+            self.auth_status.configure(
+                text="Not authenticated. Sign in to sync mods.",
+                text_color=TEXT_DIM
+            )
+
+    def _oauth_login(self) -> None:
+        """Initiate OAuth login flow."""
         self._collect()
-        self.app.cfg.jwt = ""
-        self.app.cfg.jwt_expires_at = 0.0
         self.app.cfg.save()
-        self.account_status.configure(text="Testing…", text_color=TEXT_DIM)
+        self.account_status.configure(text="Opening browser…", text_color=TEXT_DIM)
 
         def work():
-            self.app.client.authenticate(force=True)
-            return True
+            from client.oauth_auth import OAuthConfig, OAuthAuthenticator, OAuthCallbackServer
+            try:
+                config = OAuthConfig(self.app.cfg.pd_oauth_url)
+                auth = OAuthAuthenticator(config)
+                auth_url = auth.authorize_url()
+
+                import webbrowser
+                webbrowser.open(auth_url)
+
+                server = OAuthCallbackServer()
+                server.start()
+
+                if server.error:
+                    raise Exception(f"OAuth error: {server.error}")
+                if not server.code:
+                    raise Exception("No authorization code received")
+
+                tokens = auth.exchange_code(server.code, server.state)
+                self.app.cfg.access_token = tokens.get("access_token", "")
+                self.app.cfg.id_token = tokens.get("id_token", "")
+                self.app.cfg.refresh_token = tokens.get("refresh_token", "")
+
+                import time
+                expires_in = tokens.get("expires_in", 3600)
+                self.app.cfg.access_token_expires_at = time.time() + expires_in
+
+                self.app.cfg.save()
+                return True
+            except Exception as e:
+                raise Exception(f"OAuth login failed: {e}")
 
         def done(_):
-            self.account_status.configure(text="✓  Connected", text_color=SUCCESS)
+            self._update_auth_status()
+            self.account_status.configure(text="✓  Signed in", text_color=SUCCESS)
             self.app.refresh_connection()
+            self.app.mods_view.refresh_async()
+            self.after(2000, lambda: self.account_status.configure(text=""))
 
         def fail(e):
             self.account_status.configure(text=f"✗  {e}", text_color=ERROR)
+            self._update_auth_status()
 
-        self.app.run_in_thread(work, on_done=done, on_error=fail, status="Authenticating…")
+        self.app.run_in_thread(work, on_done=done, on_error=fail, status="Logging in…")
 
-    def _reauth(self) -> None:
-        self.app.cfg.jwt = ""
-        self.app.cfg.jwt_expires_at = 0.0
-        self.app.cfg.save()
-        self._save_and_test()
+    def _oauth_logout(self) -> None:
+        """Sign out and clear tokens."""
+        if messagebox.askyesno("Frag", "Sign out and clear authentication?"):
+            self.app.cfg.access_token = ""
+            self.app.cfg.id_token = ""
+            self.app.cfg.refresh_token = ""
+            self.app.cfg.access_token_expires_at = 0.0
+            self.app.cfg.save()
+            self._update_auth_status()
+            self.account_status.configure(text="✓  Signed out", text_color=TEXT_DIM)
+            self.after(2000, lambda: self.account_status.configure(text=""))
 
     # ---- cloud sync ---------------------------------------------------------
 
