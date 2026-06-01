@@ -75,7 +75,11 @@ class OAuthConfig:
 def _pkce_pair() -> tuple[str, str]:
     """Generate PKCE code_verifier and code_challenge."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .decode()
+        .rstrip("=")
+    )
     return verifier, challenge
 
 

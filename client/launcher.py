@@ -96,9 +96,9 @@ def build_splash() -> tk.Tk:
     brand = tk.Frame(pad, bg=BG)
     brand.pack(anchor="w")
     tk.Frame(brand, bg=PRIMARY, width=5, height=48).pack(side="left", padx=(0, 14))
-    tk.Label(
-        brand, text="FRAG", fg=TEXT, bg=BG, font=("Segoe UI", 38, "bold")
-    ).pack(side="left")
+    tk.Label(brand, text="FRAG", fg=TEXT, bg=BG, font=("Segoe UI", 38, "bold")).pack(
+        side="left"
+    )
 
     tk.Label(
         pad,
@@ -142,8 +142,7 @@ def main() -> None:
         root.withdraw()
         messagebox.showerror(
             "Frag",
-            "Couldn't locate frag-app.exe next to this launcher.\n"
-            "Reinstall Frag.",
+            "Couldn't locate frag-app.exe next to this launcher.\nReinstall Frag.",
         )
         return
 

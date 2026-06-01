@@ -390,7 +390,9 @@ class FragApp(ctk.CTk):
         def worker():
             try:
                 if on_progress:
-                    result = fn(*args, progress=lambda d, t: self.after(0, on_progress, d, t))
+                    result = fn(
+                        *args, progress=lambda d, t: self.after(0, on_progress, d, t)
+                    )
                 else:
                     result = fn(*args)
             except Exception as e:
@@ -508,9 +510,9 @@ class ModsView(View):
         primary_button(toolbar, text="Refresh", command=self.refresh_async).pack(
             side="right"
         )
-        ghost_button(
-            toolbar, text="Open folder", command=self._open_folder
-        ).pack(side="right", padx=(0, 8))
+        ghost_button(toolbar, text="Open folder", command=self._open_folder).pack(
+            side="right", padx=(0, 8)
+        )
         ghost_button(
             toolbar, text="Select none", width=110, command=self._select_none
         ).pack(side="right", padx=(0, 8))
@@ -522,7 +524,11 @@ class ModsView(View):
         toolbar2 = ctk.CTkFrame(self, fg_color="transparent")
         toolbar2.pack(fill="x", pady=(0, 6))
 
-        for mode, label in (("all", "All"), ("synced", "Synced"), ("unsynced", "Not synced")):
+        for mode, label in (
+            ("all", "All"),
+            ("synced", "Synced"),
+            ("unsynced", "Not synced"),
+        ):
             btn = ctk.CTkButton(
                 toolbar2,
                 text=label,
@@ -634,9 +640,13 @@ class ModsView(View):
         self._filter_mode = mode
         for m, btn in self._filter_btns.items():
             if m == mode:
-                btn.configure(fg_color=PRIMARY_SOFT, text_color=TEXT, border_color=PRIMARY_SOFT)
+                btn.configure(
+                    fg_color=PRIMARY_SOFT, text_color=TEXT, border_color=PRIMARY_SOFT
+                )
             else:
-                btn.configure(fg_color="transparent", text_color=TEXT_DIM, border_color=SURFACE_HI)
+                btn.configure(
+                    fg_color="transparent", text_color=TEXT_DIM, border_color=SURFACE_HI
+                )
         self._apply_filter()
 
     def _apply_filter(self) -> None:
@@ -644,12 +654,23 @@ class ModsView(View):
         for child in self.list_frame.winfo_children():
             child.destroy()
         filtered = [
-            m for m in self.mods
-            if (not q or q in m.best_name.lower() or q in m.filename.lower() or q in (m.mod_id or "").lower())
+            m
+            for m in self.mods
+            if (
+                not q
+                or q in m.best_name.lower()
+                or q in m.filename.lower()
+                or q in (m.mod_id or "").lower()
+            )
             and (
                 self._filter_mode == "all"
-                or (self._filter_mode == "synced" and self.app.cfg.is_mod_synced(m.sha1))
-                or (self._filter_mode == "unsynced" and not self.app.cfg.is_mod_synced(m.sha1))
+                or (
+                    self._filter_mode == "synced" and self.app.cfg.is_mod_synced(m.sha1)
+                )
+                or (
+                    self._filter_mode == "unsynced"
+                    and not self.app.cfg.is_mod_synced(m.sha1)
+                )
             )
         ]
         sort_key = self._sort_var.get() if self._sort_var else "Name A–Z"
@@ -662,7 +683,12 @@ class ModsView(View):
         elif sort_key == "Size ↑":
             filtered.sort(key=lambda m: m.size)
         elif sort_key == "Synced first":
-            filtered.sort(key=lambda m: (not self.app.cfg.is_mod_synced(m.sha1), m.best_name.lower()))
+            filtered.sort(
+                key=lambda m: (
+                    not self.app.cfg.is_mod_synced(m.sha1),
+                    m.best_name.lower(),
+                )
+            )
         if not filtered:
             no_mods = not self.mods
             _empty_state(
@@ -671,7 +697,11 @@ class ModsView(View):
                 hint=(
                     "Drop .jar files into your mods folder, then Refresh."
                     if no_mods
-                    else (f'Nothing matches "{q}".' if q else f"No {self._filter_mode} mods.")
+                    else (
+                        f'Nothing matches "{q}".'
+                        if q
+                        else f"No {self._filter_mode} mods."
+                    )
                 ),
             )
             return
@@ -804,8 +834,14 @@ class WorldsView(View):
         self.count_chip.pack(side="left")
 
         self.sync_chip = ctk.CTkLabel(
-            toolbar, text="", font=FONT_TINY, text_color=TEXT_DIM,
-            fg_color=SURFACE, corner_radius=8, padx=12, height=36,
+            toolbar,
+            text="",
+            font=FONT_TINY,
+            text_color=TEXT_DIM,
+            fg_color=SURFACE,
+            corner_radius=8,
+            padx=12,
+            height=36,
         )
         self.sync_chip.pack(side="left", padx=(10, 0))
 
@@ -863,7 +899,9 @@ class WorldsView(View):
 
         self.app.sync_view.refresh_selection_chip()
         self.app.run_in_thread(
-            self._inspect_all, worlds, on_done=lambda _r: None,
+            self._inspect_all,
+            worlds,
+            on_done=lambda _r: None,
             status="Inspecting worlds…",
         )
 
@@ -916,8 +954,12 @@ class WorldsView(View):
         btn.pack(side="right")
 
         self._rows[world.name] = {
-            "meta": meta, "btn": btn, "right": right,
-            "info": None, "cb": cb, "var": var,
+            "meta": meta,
+            "btn": btn,
+            "right": right,
+            "info": None,
+            "cb": cb,
+            "var": var,
         }
 
     def _on_toggle(self, name: str, synced: bool) -> None:
@@ -947,9 +989,11 @@ class WorldsView(View):
         for world in worlds:
             info = read_world(world)
             try:
-                size_mb = sum(
-                    p.stat().st_size for p in world.rglob("*") if p.is_file()
-                ) / 1024 / 1024
+                size_mb = (
+                    sum(p.stat().st_size for p in world.rglob("*") if p.is_file())
+                    / 1024
+                    / 1024
+                )
             except OSError:
                 size_mb = 0.0
             self.app.after(0, self._apply_info, world.name, info, size_mb)
@@ -980,7 +1024,8 @@ class WorldsView(View):
             row["source_pill"].destroy()
         if info.source != "none":
             color, soft = (
-                (SUCCESS, SUCCESS_SOFT) if info.source == "frag-mod"
+                (SUCCESS, SUCCESS_SOFT)
+                if info.source == "frag-mod"
                 else (TEXT_DIM, SURFACE_HI)
             )
             sp = _pill(row["right"], info.source_label, color, soft)
@@ -1017,23 +1062,30 @@ class WorldsView(View):
 
         header = ctk.CTkFrame(win, fg_color="transparent")
         header.pack(fill="x", padx=24, pady=(22, 4))
-        ctk.CTkLabel(header, text=info.name, font=FONT_H1, text_color=TEXT, anchor="w").pack(
-            anchor="w"
-        )
+        ctk.CTkLabel(
+            header, text=info.name, font=FONT_H1, text_color=TEXT, anchor="w"
+        ).pack(anchor="w")
 
         chips = ctk.CTkFrame(header, fg_color="transparent")
         chips.pack(anchor="w", pady=(8, 0))
         if info.mc_version:
-            _pill(chips, f"MC {info.mc_version}", TEXT, SURFACE_ALT).pack(side="left", padx=(0, 6))
+            _pill(chips, f"MC {info.mc_version}", TEXT, SURFACE_ALT).pack(
+                side="left", padx=(0, 6)
+            )
         if info.loader:
             loader_text = info.loader
             if info.loader_version:
                 loader_text += f" {info.loader_version}"
-            _pill(chips, loader_text, PRIMARY, PRIMARY_SOFT).pack(side="left", padx=(0, 6))
-        _pill(chips, f"{info.mod_count} mods", ACCENT, ACCENT_SOFT).pack(side="left", padx=(0, 6))
+            _pill(chips, loader_text, PRIMARY, PRIMARY_SOFT).pack(
+                side="left", padx=(0, 6)
+            )
+        _pill(chips, f"{info.mod_count} mods", ACCENT, ACCENT_SOFT).pack(
+            side="left", padx=(0, 6)
+        )
         if info.source != "none":
             color, soft = (
-                (SUCCESS, SUCCESS_SOFT) if info.source == "frag-mod"
+                (SUCCESS, SUCCESS_SOFT)
+                if info.source == "frag-mod"
                 else (TEXT_DIM, SURFACE_HI)
             )
             _pill(chips, info.source_label, color, soft).pack(side="left", padx=(0, 6))
@@ -1056,8 +1108,11 @@ class WorldsView(View):
             meta_parts.append(f"played {info.last_played}")
         if meta_parts:
             ctk.CTkLabel(
-                header, text="  ·  ".join(meta_parts),
-                font=FONT_DIM, text_color=TEXT_FAINT, anchor="w",
+                header,
+                text="  ·  ".join(meta_parts),
+                font=FONT_DIM,
+                text_color=TEXT_FAINT,
+                anchor="w",
             ).pack(anchor="w", pady=(8, 0))
 
         body_card = card(win)
@@ -1077,26 +1132,40 @@ class WorldsView(View):
             left = ctk.CTkFrame(row_frame, fg_color="transparent")
             left.pack(side="left", fill="x", expand=True, padx=14, pady=8)
             ctk.CTkLabel(
-                left, text=mod.best_name, font=FONT_BODY,
-                text_color=TEXT, anchor="w",
+                left,
+                text=mod.best_name,
+                font=FONT_BODY,
+                text_color=TEXT,
+                anchor="w",
             ).pack(anchor="w")
             if mod.display_name and mod.mod_id and mod.display_name != mod.mod_id:
                 ctk.CTkLabel(
-                    left, text=mod.mod_id, font=FONT_TINY,
-                    text_color=TEXT_FAINT, anchor="w",
+                    left,
+                    text=mod.mod_id,
+                    font=FONT_TINY,
+                    text_color=TEXT_FAINT,
+                    anchor="w",
                 ).pack(anchor="w")
             if mod.description:
                 desc = mod.description
                 if len(desc) > 140:
                     desc = desc[:137].rstrip() + "…"
                 ctk.CTkLabel(
-                    left, text=desc, font=FONT_TINY,
-                    text_color=TEXT_DIM, anchor="w", wraplength=420, justify="left",
+                    left,
+                    text=desc,
+                    font=FONT_TINY,
+                    text_color=TEXT_DIM,
+                    anchor="w",
+                    wraplength=420,
+                    justify="left",
                 ).pack(anchor="w", pady=(2, 0))
 
             ctk.CTkLabel(
-                row_frame, text=mod.version or "?", font=FONT_MONO,
-                text_color=TEXT_DIM, anchor="e",
+                row_frame,
+                text=mod.version or "?",
+                font=FONT_MONO,
+                text_color=TEXT_DIM,
+                anchor="e",
             ).pack(side="right", padx=14, pady=8)
 
 
@@ -1105,7 +1174,12 @@ class WorldsView(View):
 
 class SyncView(View):
     def __init__(self, parent, app: "FragApp"):
-        super().__init__(parent, app, "Sync", "Push your local mods to the cloud, or pull them on another device")
+        super().__init__(
+            parent,
+            app,
+            "Sync",
+            "Push your local mods to the cloud, or pull them on another device",
+        )
         self._build()
 
     def _build(self) -> None:
@@ -1121,17 +1195,29 @@ class SyncView(View):
         ctk.CTkLabel(
             push,
             text="Bundle your selected mods (and worlds, if enabled) and upload to your Frag bucket.",
-            font=FONT_BODY, text_color=TEXT_DIM, wraplength=380, justify="left",
+            font=FONT_BODY,
+            text_color=TEXT_DIM,
+            wraplength=380,
+            justify="left",
         ).pack(anchor="w", padx=20)
 
         self.selection_chip = ctk.CTkLabel(
-            push, text="", font=FONT_TINY, text_color=TEXT_DIM,
-            fg_color=SURFACE_ALT, corner_radius=8, padx=12, height=26,
+            push,
+            text="",
+            font=FONT_TINY,
+            text_color=TEXT_DIM,
+            fg_color=SURFACE_ALT,
+            corner_radius=8,
+            padx=12,
+            height=26,
         )
         self.selection_chip.pack(anchor="w", padx=20, pady=(10, 0))
 
         self.upload_progress = ctk.CTkProgressBar(
-            push, progress_color=PRIMARY, fg_color=SURFACE_ALT, height=6,
+            push,
+            progress_color=PRIMARY,
+            fg_color=SURFACE_ALT,
+            height=6,
         )
         self.upload_progress.set(0)
         self.upload_progress.pack(fill="x", padx=20, pady=(14, 4))
@@ -1152,10 +1238,16 @@ class SyncView(View):
         ctk.CTkLabel(
             pull,
             text="Replace your local mods with the bundle from your Frag bucket. A backup is kept.",
-            font=FONT_BODY, text_color=TEXT_DIM, wraplength=380, justify="left",
+            font=FONT_BODY,
+            text_color=TEXT_DIM,
+            wraplength=380,
+            justify="left",
         ).pack(anchor="w", padx=20)
         self.download_progress = ctk.CTkProgressBar(
-            pull, progress_color=ACCENT, fg_color=SURFACE_ALT, height=6,
+            pull,
+            progress_color=ACCENT,
+            fg_color=SURFACE_ALT,
+            height=6,
         )
         self.download_progress.set(0)
         self.download_progress.pack(fill="x", padx=20, pady=(16, 4))
@@ -1172,12 +1264,17 @@ class SyncView(View):
         list_card.pack(fill="both", expand=True, pady=(16, 0))
         header = ctk.CTkFrame(list_card, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(16, 8))
-        ctk.CTkLabel(header, text="Cloud files", font=FONT_H2, text_color=TEXT).pack(side="left")
-        ghost_button(header, text="Refresh", command=self.refresh_files).pack(side="right")
+        ctk.CTkLabel(header, text="Cloud files", font=FONT_H2, text_color=TEXT).pack(
+            side="left"
+        )
+        ghost_button(header, text="Refresh", command=self.refresh_files).pack(
+            side="right"
+        )
 
         self.files_frame = ctk.CTkScrollableFrame(
             list_card,
-            fg_color=SURFACE, height=200,
+            fg_color=SURFACE,
+            height=200,
             scrollbar_button_color=SURFACE_HI,
             scrollbar_button_hover_color=PRIMARY,
         )
@@ -1217,11 +1314,15 @@ class SyncView(View):
             row, text="📦  " + name, font=FONT_BODY, text_color=TEXT, anchor="w"
         ).pack(side="left", padx=14, pady=10, fill="x", expand=True)
         danger_button(
-            row, text="Delete", width=80,
+            row,
+            text="Delete",
+            width=80,
             command=lambda n=name: self._delete_clicked(n),
         ).pack(side="right", padx=8, pady=8)
         ghost_button(
-            row, text="Download", width=110,
+            row,
+            text="Download",
+            width=110,
             command=lambda n=name: self._download_named(n),
         ).pack(side="right", padx=4, pady=8)
 
@@ -1248,7 +1349,9 @@ class SyncView(View):
         selected_worlds = [
             w for w in self.app.worlds_view.worlds if cfg.is_world_synced(w.name)
         ]
-        should_upload_worlds = cfg.sync_worlds and cfg.saves_path.is_dir() and selected_worlds
+        should_upload_worlds = (
+            cfg.sync_worlds and cfg.saves_path.is_dir() and selected_worlds
+        )
 
         if not selected_mods and not should_upload_worlds:
             messagebox.showinfo(
@@ -1272,14 +1375,18 @@ class SyncView(View):
         worlds_zip = tmp_root / "worlds.zip"
 
         def work():
-            uploads_planned = (1 if selected_mods else 0) + (1 if should_upload_worlds else 0)
+            uploads_planned = (1 if selected_mods else 0) + (
+                1 if should_upload_worlds else 0
+            )
             mods_share = 1.0 / uploads_planned if uploads_planned else 1.0
             cursor = 0.0
 
             if selected_mods:
                 self._set_upload(cursor, "Zipping mods…")
                 zip_directory(
-                    cfg.mods_path, mods_zip, items=selected_mods,
+                    cfg.mods_path,
+                    mods_zip,
+                    items=selected_mods,
                     progress=lambda i, t: self._set_upload(
                         cursor + (i / max(t, 1)) * mods_share * 0.4,
                         f"Zipping mods… ({i}/{t})",
@@ -1299,7 +1406,9 @@ class SyncView(View):
             if should_upload_worlds:
                 self._set_upload(cursor, "Zipping worlds…")
                 zip_directory(
-                    cfg.saves_path, worlds_zip, items=selected_worlds,
+                    cfg.saves_path,
+                    worlds_zip,
+                    items=selected_worlds,
                     progress=lambda i, t: self._set_upload(
                         cursor + (i / max(t, 1)) * mods_share * 0.4,
                         f"Zipping worlds… ({i}/{t})",
@@ -1340,9 +1449,11 @@ class SyncView(View):
 
     def _set_progress(self, progress_bar, status_label, frac: float, text: str) -> None:
         """Update progress bar and status label safely (thread-safe)."""
+
         def update():
             progress_bar.set(max(0.0, min(1.0, frac)))
             status_label.configure(text=text)
+
         self.app.after(0, update)
 
     def _set_upload(self, frac: float, text: str) -> None:
@@ -1388,7 +1499,8 @@ class SyncView(View):
         def work():
             self._set_download(0, f"Downloading {label}…")
             self.app.client.download_file(
-                filename, tmp_zip,
+                filename,
+                tmp_zip,
                 progress=lambda d, t: self._set_download(
                     (d / max(t, 1)) * 0.7,
                     f"Downloading {label}… {d / 1024 / 1024:.1f} MB",
@@ -1400,7 +1512,8 @@ class SyncView(View):
             target_dir.mkdir(parents=True, exist_ok=True)
             self._set_download(0.75, f"Extracting {label}…")
             unzip_into(
-                tmp_zip, target_dir,
+                tmp_zip,
+                target_dir,
                 progress=lambda i, t: self._set_download(
                     0.75 + (i / max(t, 1)) * 0.25,
                     f"Extracting {label}… ({i}/{t})",
@@ -1419,10 +1532,14 @@ class SyncView(View):
             self._set_download(0, f"Failed: {e}")
             tmp_zip.unlink(missing_ok=True)
 
-        self.app.run_in_thread(work, on_done=done, on_error=fail, status=f"Downloading {label}…")
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status=f"Downloading {label}…"
+        )
 
     def _delete_clicked(self, filename: str) -> None:
-        if not messagebox.askyesno("Frag", f"Delete '{filename}' from your Frag bucket?"):
+        if not messagebox.askyesno(
+            "Frag", f"Delete '{filename}' from your Frag bucket?"
+        ):
             return
 
         def work():
@@ -1431,7 +1548,12 @@ class SyncView(View):
         def done(_):
             self.refresh_files()
 
-        self.app.run_in_thread(work, on_done=done, on_error=self._show_error, status=f"Deleting {filename}…")
+        self.app.run_in_thread(
+            work,
+            on_done=done,
+            on_error=self._show_error,
+            status=f"Deleting {filename}…",
+        )
 
     def _show_error(self, e: Exception) -> None:
         messagebox.showerror("Frag", str(e))
@@ -1447,7 +1569,8 @@ class SettingsView(View):
 
     def _build(self) -> None:
         wrap = ctk.CTkScrollableFrame(
-            self, fg_color=BG,
+            self,
+            fg_color=BG,
             scrollbar_button_color=SURFACE_HI,
             scrollbar_button_hover_color=PRIMARY,
         )
@@ -1471,7 +1594,9 @@ class SettingsView(View):
 
         btns = ctk.CTkFrame(acct, fg_color="transparent")
         btns.pack(fill="x", padx=22, pady=(10, 20))
-        primary_button(btns, text="Sign in with OAuth", command=self._oauth_login).pack(side="left")
+        primary_button(btns, text="Sign in with OAuth", command=self._oauth_login).pack(
+            side="left"
+        )
         ghost_button(btns, text="Sign out", command=self._oauth_logout).pack(
             side="left", padx=(8, 0)
         )
@@ -1500,11 +1625,14 @@ class SettingsView(View):
         row = ctk.CTkFrame(sync, fg_color="transparent")
         row.pack(fill="x", padx=22, pady=(4, 20))
         ctk.CTkSwitch(
-            row, text="Also sync worlds (saves folder)",
+            row,
+            text="Also sync worlds (saves folder)",
             variable=self.worlds_var,
-            font=FONT_BODY, text_color=TEXT,
+            font=FONT_BODY,
+            text_color=TEXT,
             progress_color=PRIMARY,
-            button_color=TEXT, button_hover_color=ACCENT,
+            button_color=TEXT,
+            button_hover_color=ACCENT,
         ).pack(side="left")
 
         # Cloud Sync — replicate settings (sync toggle + per-mod/world selection)
@@ -1541,7 +1669,9 @@ class SettingsView(View):
         # Save
         save_row = ctk.CTkFrame(wrap, fg_color="transparent")
         save_row.pack(fill="x", pady=(4, 16))
-        primary_button(save_row, text="Save settings", command=self._save_all).pack(side="left")
+        primary_button(save_row, text="Save settings", command=self._save_all).pack(
+            side="left"
+        )
         self.save_status = ctk.CTkLabel(
             save_row, text="", font=FONT_DIM, text_color=TEXT_DIM
         )
@@ -1599,7 +1729,12 @@ class SettingsView(View):
         self.account_status.configure(text="Opening browser…", text_color=TEXT_DIM)
 
         def work():
-            from client.oauth_auth import OAuthConfig, OAuthAuthenticator, OAuthCallbackServer
+            from client.oauth_auth import (
+                OAuthConfig,
+                OAuthAuthenticator,
+                OAuthCallbackServer,
+            )
+
             try:
                 config = OAuthConfig(self.app.cfg.pd_oauth_url)
                 auth = OAuthAuthenticator(config)
@@ -1608,6 +1743,7 @@ class SettingsView(View):
                 server = OAuthCallbackServer()
                 server.prepare()  # bind port BEFORE browser navigates back
                 import webbrowser
+
                 webbrowser.open(auth_url)
                 server.wait()
 
@@ -1622,6 +1758,7 @@ class SettingsView(View):
                 self.app.cfg.refresh_token = tokens.get("refresh_token", "")
 
                 import time
+
                 expires_in = tokens.get("expires_in", 3600)
                 self.app.cfg.access_token_expires_at = time.time() + expires_in
 
@@ -1695,7 +1832,9 @@ class SettingsView(View):
         def fail(e):
             self.cloud_status.configure(text=f"✗  {e}", text_color=ERROR)
 
-        self.app.run_in_thread(work, on_done=done, on_error=fail, status="Pushing settings…")
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status="Pushing settings…"
+        )
 
     def _pull_settings(self) -> None:
         if not _ensure_configured(self.app):
@@ -1731,7 +1870,9 @@ class SettingsView(View):
         def fail(e):
             self.cloud_status.configure(text=f"✗  {e}", text_color=ERROR)
 
-        self.app.run_in_thread(work, on_done=done, on_error=fail, status="Pulling settings…")
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status="Pulling settings…"
+        )
 
 
 # ---- form + empty-state helpers ---------------------------------------------
@@ -1752,9 +1893,15 @@ def _labeled(parent, label: str, var: ctk.StringVar, show: str = "") -> None:
         parent, text=label, font=FONT_DIM, text_color=TEXT_DIM, anchor="w"
     ).pack(fill="x", padx=22, pady=(10, 4))
     ctk.CTkEntry(
-        parent, textvariable=var, font=FONT_MONO,
-        fg_color=SURFACE_ALT, border_color=SURFACE_HI, text_color=TEXT,
-        show=show, height=36, corner_radius=8,
+        parent,
+        textvariable=var,
+        font=FONT_MONO,
+        fg_color=SURFACE_ALT,
+        border_color=SURFACE_HI,
+        text_color=TEXT,
+        show=show,
+        height=36,
+        corner_radius=8,
     ).pack(fill="x", padx=22)
 
 
@@ -1765,9 +1912,14 @@ def _labeled_path(parent, label: str, var: ctk.StringVar) -> None:
     row = ctk.CTkFrame(parent, fg_color="transparent")
     row.pack(fill="x", padx=22)
     ctk.CTkEntry(
-        row, textvariable=var, font=FONT_MONO,
-        fg_color=SURFACE_ALT, border_color=SURFACE_HI, text_color=TEXT,
-        height=36, corner_radius=8,
+        row,
+        textvariable=var,
+        font=FONT_MONO,
+        fg_color=SURFACE_ALT,
+        border_color=SURFACE_HI,
+        text_color=TEXT,
+        height=36,
+        corner_radius=8,
     ).pack(side="left", fill="x", expand=True)
 
     def browse():
@@ -1775,7 +1927,9 @@ def _labeled_path(parent, label: str, var: ctk.StringVar) -> None:
         if chosen:
             var.set(chosen)
 
-    ghost_button(row, text="Browse…", width=96, command=browse).pack(side="left", padx=(8, 0))
+    ghost_button(row, text="Browse…", width=96, command=browse).pack(
+        side="left", padx=(8, 0)
+    )
 
 
 def _empty_state(parent, title: str, hint: str) -> None:
@@ -1790,7 +1944,9 @@ def _empty_state(parent, title: str, hint: str) -> None:
         lbl.image = photo  # type: ignore
         lbl.pack()
     except Exception:
-        ctk.CTkLabel(wrap, text="—", font=("Segoe UI", 28), text_color=TEXT_FAINT).pack()
+        ctk.CTkLabel(
+            wrap, text="—", font=("Segoe UI", 28), text_color=TEXT_FAINT
+        ).pack()
     ctk.CTkLabel(wrap, text=title, font=FONT_H2, text_color=TEXT).pack(pady=(12, 4))
     ctk.CTkLabel(wrap, text=hint, font=FONT_DIM, text_color=TEXT_DIM).pack()
 
@@ -1812,6 +1968,7 @@ def _ensure_configured(app: "FragApp") -> bool:
 def run() -> None:
     if os.environ.get("FRAG_FROM_LAUNCHER") != "1":
         import tkinter.messagebox as _mb
+
         _root = tk.Tk()
         _root.withdraw()
         _mb.showerror(
