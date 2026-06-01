@@ -176,16 +176,24 @@ def _read_from_frag_mod(world_dir: Path, info: WorldInfo) -> bool:
 
 
 def _enrich_with_level_dat_timestamp(world_dir: Path, info: WorldInfo) -> None:
+    """Extract LastPlayed timestamp from level.dat."""
     level_dat = world_dir / "level.dat"
     if not level_dat.is_file():
         return
+
     try:
         nbt_file = nbtlib.load(str(level_dat))
-    except (OSError, ValueError, EOFError):
+    except (OSError, ValueError, EOFError, Exception):
         return
-    root = _to_py(nbt_file.root if hasattr(nbt_file, "root") else nbt_file)
-    data = _unwrap_data(root)
-    info.last_played_ms = int(data.get("LastPlayed", 0) or 0)
+
+    try:
+        root = _to_py(nbt_file.root if hasattr(nbt_file, "root") else nbt_file)
+        if not isinstance(root, dict):
+            return
+        data = _unwrap_data(root)
+        info.last_played_ms = int(data.get("LastPlayed", 0) or 0)
+    except (ValueError, TypeError, KeyError):
+        return
 
 
 # ---- level.dat fallback ------------------------------------------------------
@@ -267,6 +275,9 @@ def _detect_loader_from_nbt(root: dict, mods: list[Mod]) -> str:
 
 
 def _to_py(node: Any) -> Any:
+    """Convert nbtlib tags to native Python types."""
+    if node is None:
+        return None
     if isinstance(node, nbtlib.tag.Compound):
         return {str(k): _to_py(v) for k, v in node.items()}
     if isinstance(node, (nbtlib.tag.List, list, tuple)):
@@ -291,12 +302,16 @@ def _walk_compounds(node: Any, path: tuple[str, ...] = ()):
 
 
 def _looks_like_mod_entry(d: dict) -> tuple[str, str] | None:
+    """Check if dict resembles a mod registry entry."""
     if not isinstance(d, dict):
         return None
+
     modid_keys = ("ModId", "modId", "modid", "ModID", "mod_id")
     version_keys = ("ModVersion", "modVersion", "modversion", "version", "Version")
+
     modid = next((str(d[k]) for k in modid_keys if k in d), None)
     if not modid:
         return None
-    version = next((str(d[k]) for k in version_keys if k in d), "")
+
+    version = next((str(d.get(k, "")) for k in version_keys if k in d), "")
     return modid, version

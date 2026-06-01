@@ -59,6 +59,12 @@ class ModInfo:
 
 
 def sha1_of(path: Path, chunk: int = 1024 * 1024) -> str:
+    """Compute SHA1 hash of file."""
+    if not path.is_file():
+        raise ValueError(f"Not a file: {path}")
+    if chunk <= 0:
+        raise ValueError(f"Chunk size must be positive, got {chunk}")
+
     h = hashlib.sha1()
     with open(path, "rb") as fh:
         for block in iter(lambda: fh.read(chunk), b""):
@@ -67,7 +73,13 @@ def sha1_of(path: Path, chunk: int = 1024 * 1024) -> str:
 
 
 def parse_mod_jar(jar: Path) -> dict:
-    """Read mods.toml or neoforge.mods.toml from a jar. Returns first [[mods]] entry."""
+    """
+    Extract mod metadata from mods.toml or neoforge.mods.toml.
+    Returns first [[mods]] entry, or empty dict if not found.
+    """
+    if not jar.is_file():
+        return {}
+
     candidates = ("META-INF/neoforge.mods.toml", "META-INF/mods.toml")
     try:
         with zipfile.ZipFile(jar) as zf:
@@ -75,21 +87,23 @@ def parse_mod_jar(jar: Path) -> dict:
             for candidate in candidates:
                 if candidate not in names:
                     continue
-                with zf.open(candidate) as f:
-                    raw = f.read().decode("utf-8", errors="replace")
-                # Forge mods.toml occasionally has non-TOML quirks; strip BOM
-                raw = raw.lstrip("﻿")
                 try:
+                    with zf.open(candidate) as f:
+                        raw = f.read().decode("utf-8", errors="replace")
+                    raw = raw.lstrip("﻿")
                     data = tomllib.loads(raw)
-                except tomllib.TOMLDecodeError:
+                except (tomllib.TOMLDecodeError, KeyError, UnicodeDecodeError):
                     continue
+
                 mods = data.get("mods") or []
-                if not mods:
+                if not mods or not isinstance(mods[0], dict):
                     continue
+
                 m = mods[0]
                 version = str(m.get("version", ""))
                 if _VERSION_PLACEHOLDER_RE.search(version):
-                    version = ""  # ${file.jarVersion} etc — unresolved
+                    version = ""
+
                 return {
                     "mod_id": str(m.get("modId", "")),
                     "display_name": str(m.get("displayName", "")),
@@ -100,13 +114,18 @@ def parse_mod_jar(jar: Path) -> dict:
                 }
     except (zipfile.BadZipFile, OSError):
         return {}
+
     return {}
 
 
 def list_jars(mods_dir: Path) -> list[Path]:
+    """List all .jar files in a directory."""
     if not mods_dir.is_dir():
         return []
-    return sorted(p for p in mods_dir.iterdir() if p.is_file() and p.suffix.lower() == ".jar")
+    try:
+        return sorted(p for p in mods_dir.iterdir() if p.is_file() and p.suffix.lower() == ".jar")
+    except (OSError, PermissionError):
+        return []
 
 
 def modrinth_lookup(hashes: Iterable[str], timeout: float = MODRINTH_TIMEOUT) -> dict[str, dict]:

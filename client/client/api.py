@@ -71,11 +71,7 @@ class FragClient:
 
     def ping(self) -> bool:
         try:
-            resp = self.session.post(
-                self._url("/frag/v1/ping"),
-                headers={"Content-Type": "application/json"},
-                timeout=10,
-            )
+            resp = self.session.post(self._url("/frag/v1/ping"), timeout=10)
             return resp.status_code == 200
         except requests.RequestException:
             return False

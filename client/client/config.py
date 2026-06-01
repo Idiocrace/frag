@@ -33,24 +33,26 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 @dataclass
 class Config:
+    """Frag client configuration, split into device-local and cloud-synced sections."""
+
     # ---- device-local (not synced) -----------------------------------------
     server_url: str = "http://localhost:4543"
-    auth_token: str = ""        # raw token from auth.py — exchanged for JWT
-    jwt: str = ""               # cached JWT
-    jwt_expires_at: float = 0.0 # epoch seconds
+    auth_token: str = ""
+    jwt: str = ""
+    jwt_expires_at: float = 0.0
     minecraft_dir: str = ""
     mods_dir: str = ""
     saves_dir: str = ""
     last_mod_sync: float = 0.0
     last_world_sync: float = 0.0
     last_settings_sync: float = 0.0
-    known_mods: dict = field(default_factory=dict)  # sha1 -> metadata cache
+    known_mods: dict = field(default_factory=dict)
     device_name: str = ""
 
     # ---- synced (replicated across devices) --------------------------------
     sync_worlds: bool = False
-    mod_sync_excludes: list = field(default_factory=list)    # sha1 hashes excluded
-    world_sync_excludes: list = field(default_factory=list)  # world dir names excluded
+    mod_sync_excludes: list = field(default_factory=list)
+    world_sync_excludes: list = field(default_factory=list)
 
     @classmethod
     def load(cls) -> "Config":

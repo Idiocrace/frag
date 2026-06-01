@@ -262,7 +262,7 @@ class FragApp(ctk.CTk):
                 command=lambda k=key: self._show_section(k),
             )
             btn.pack(fill="x", padx=12, pady=2)
-            self._nav_buttons[key] = btn
+            self._nav_buttons[key] = btn  # Capture nav_buttons before loop completes
 
         # Bottom: connection chip + settings entry
         chip_row = ctk.CTkFrame(sidebar, fg_color="transparent")
@@ -366,6 +366,7 @@ class FragApp(ctk.CTk):
         on_progress=None,
         status: str = "",
     ) -> None:
+        """Run a function in a background thread with UI callbacks."""
         if status:
             self.set_status(status)
 
@@ -375,11 +376,16 @@ class FragApp(ctk.CTk):
                     result = fn(*args, progress=lambda d, t: self.after(0, on_progress, d, t))
                 else:
                     result = fn(*args)
-            except Exception as e:  # noqa: BLE001
-                tb = traceback.format_exc()
-                self.after(0, self._handle_error, e, tb, on_error)
+            except Exception as e:
+                self.after(0, self._handle_error, e, traceback.format_exc(), on_error)
                 return
-            self.after(0, lambda: (on_done(result) if on_done else None, self.set_status("Ready.")))
+
+            def on_complete():
+                if on_done:
+                    on_done(result)
+                self.set_status("Ready.")
+
+            self.after(0, on_complete)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1210,17 +1216,18 @@ class SyncView(View):
             status="Uploading…",
         )
 
+    def _set_progress(self, progress_bar, status_label, frac: float, text: str) -> None:
+        """Update progress bar and status label safely (thread-safe)."""
+        def update():
+            progress_bar.set(max(0.0, min(1.0, frac)))
+            status_label.configure(text=text)
+        self.app.after(0, update)
+
     def _set_upload(self, frac: float, text: str) -> None:
-        self.app.after(0, lambda: (
-            self.upload_progress.set(max(0.0, min(1.0, frac))),
-            self.upload_status.configure(text=text),
-        ))
+        self._set_progress(self.upload_progress, self.upload_status, frac, text)
 
     def _set_download(self, frac: float, text: str) -> None:
-        self.app.after(0, lambda: (
-            self.download_progress.set(max(0.0, min(1.0, frac))),
-            self.download_status.configure(text=text),
-        ))
+        self._set_progress(self.download_progress, self.download_status, frac, text)
 
     def _download_clicked(self, kind: str) -> None:
         if not _ensure_configured(self.app):
