@@ -7,10 +7,12 @@ swaps between views (Mods, Worlds, Sync, Settings).
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import tkinter as tk
 import traceback
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -205,6 +207,13 @@ class FragApp(ctk.CTk):
         self.after(150, self.mods_view.refresh_async)
         self.after(150, self.worlds_view.refresh)
         self.after(200, self.refresh_connection)
+        self.after(60_000, self._schedule_connection_check)
+        # Global keyboard shortcuts
+        self.bind("<Control-Key-1>", lambda _e: self._show_section("mods"))
+        self.bind("<Control-Key-2>", lambda _e: self._show_section("worlds"))
+        self.bind("<Control-Key-3>", lambda _e: self._show_section("sync"))
+        self.bind("<Control-Key-4>", lambda _e: self._show_section("settings"))
+        self.bind("<Control-r>", lambda _e: self._refresh_current())
 
     # ---- layout -------------------------------------------------------------
 
@@ -264,16 +273,20 @@ class FragApp(ctk.CTk):
             btn.pack(fill="x", padx=12, pady=2)
             self._nav_buttons[key] = btn  # Capture nav_buttons before loop completes
 
-        # Bottom: connection chip + settings entry
+        # Bottom: connection chip + settings entry (click to re-check)
         chip_row = ctk.CTkFrame(sidebar, fg_color="transparent")
         chip_row.pack(side="bottom", fill="x", padx=20, pady=(8, 16))
+        chip_row.bind("<Button-1>", lambda _e: self.refresh_connection())
         self._conn_chip_dot = ctk.CTkLabel(
             chip_row, text="●", text_color=TEXT_FAINT, font=("Segoe UI", 12)
         )
         self._conn_chip_dot.pack(side="left")
-        ctk.CTkLabel(
+        self._conn_chip_dot.bind("<Button-1>", lambda _e: self.refresh_connection())
+        _conn_text_lbl = ctk.CTkLabel(
             chip_row, textvariable=self._conn_text, font=FONT_DIM, text_color=TEXT_DIM
-        ).pack(side="left", padx=(6, 0))
+        )
+        _conn_text_lbl.pack(side="left", padx=(6, 0))
+        _conn_text_lbl.bind("<Button-1>", lambda _e: self.refresh_connection())
 
         ctk.CTkFrame(sidebar, fg_color=DIVIDER, height=1).pack(
             side="bottom", fill="x", padx=16, pady=(0, 8)
@@ -340,6 +353,7 @@ class FragApp(ctk.CTk):
         ).pack(side="left", padx=16, pady=5)
 
     def _show_section(self, key: str) -> None:
+        prev = self._current_section
         for view in self._views.values():
             view.pack_forget()
         view = self._views[key]
@@ -351,6 +365,9 @@ class FragApp(ctk.CTk):
             else:
                 btn.configure(fg_color="transparent", text_color=TEXT_DIM)
         self._current_section = key
+        # Auto-actions when switching tabs
+        if key == "sync" and prev != "sync":
+            self.after(50, self.sync_view.refresh_files)
 
     # ---- helpers ------------------------------------------------------------
 
@@ -410,6 +427,20 @@ class FragApp(ctk.CTk):
 
         self.run_in_thread(work, on_done=done)
 
+    def _schedule_connection_check(self) -> None:
+        """Ping the server every 60 s to keep the connection indicator fresh."""
+        self.refresh_connection()
+        self.after(60_000, self._schedule_connection_check)
+
+    def _refresh_current(self) -> None:
+        """Ctrl+R: refresh whichever view is currently shown."""
+        if self._current_section == "mods":
+            self.mods_view.refresh_async()
+        elif self._current_section == "worlds":
+            self.worlds_view.refresh()
+        elif self._current_section == "sync":
+            self.sync_view.refresh_files()
+
 
 # ---- view base --------------------------------------------------------------
 
@@ -437,25 +468,29 @@ class ModsView(View):
         super().__init__(parent, app, "Mods", "Installed locally")
         self.mods: list[ModInfo] = []
         self._filter = ""
+        self._filter_mode = "all"  # "all" | "synced" | "unsynced"
+        self._search_entry: ctk.CTkEntry | None = None
+        self._filter_btns: dict[str, ctk.CTkButton] = {}
+        self._sort_var: ctk.StringVar | None = None
         self._build()
 
     def _build(self) -> None:
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
-        toolbar.pack(fill="x", pady=(8, 12))
+        toolbar.pack(fill="x", pady=(8, 4))
 
         self.search_var = ctk.StringVar()
-        search = ctk.CTkEntry(
+        self._search_entry = ctk.CTkEntry(
             toolbar,
             textvariable=self.search_var,
-            placeholder_text="Search mods…",
+            placeholder_text="Search mods…  (Ctrl+F)",
             fg_color=SURFACE,
             border_color=SURFACE_HI,
             text_color=TEXT,
             height=36,
-            width=260,
+            width=280,
             corner_radius=8,
         )
-        search.pack(side="left")
+        self._search_entry.pack(side="left")
         self.search_var.trace_add("write", lambda *_: self._apply_filter())
 
         self.count_chip = ctk.CTkLabel(
@@ -482,6 +517,45 @@ class ModsView(View):
         ghost_button(
             toolbar, text="Select all", width=100, command=self._select_all
         ).pack(side="right", padx=(0, 8))
+
+        # Filter chips + sort row
+        toolbar2 = ctk.CTkFrame(self, fg_color="transparent")
+        toolbar2.pack(fill="x", pady=(0, 6))
+
+        for mode, label in (("all", "All"), ("synced", "Synced"), ("unsynced", "Not synced")):
+            btn = ctk.CTkButton(
+                toolbar2,
+                text=label,
+                font=FONT_TINY,
+                fg_color=PRIMARY_SOFT if mode == "all" else "transparent",
+                text_color=TEXT if mode == "all" else TEXT_DIM,
+                hover_color=SURFACE_ALT,
+                border_width=1,
+                border_color=PRIMARY_SOFT if mode == "all" else SURFACE_HI,
+                corner_radius=8,
+                height=28,
+                width=96,
+                command=lambda m=mode: self._set_filter_mode(m),
+            )
+            btn.pack(side="left", padx=(0, 4))
+            self._filter_btns[mode] = btn
+
+        self._sort_var = ctk.StringVar(value="Name A–Z")
+        ctk.CTkOptionMenu(
+            toolbar2,
+            variable=self._sort_var,
+            values=["Name A–Z", "Name Z–A", "Size ↓", "Size ↑", "Synced first"],
+            fg_color=SURFACE,
+            button_color=SURFACE_HI,
+            button_hover_color=SURFACE_ALT,
+            text_color=TEXT_DIM,
+            font=FONT_TINY,
+            height=28,
+            width=130,
+            command=lambda _: self._apply_filter(),
+        ).pack(side="left", padx=(8, 0))
+
+        self.app.bind("<Control-f>", lambda _e: self._focus_search())
 
         # Path + warnings
         self.path_label = ctk.CTkLabel(
@@ -528,7 +602,7 @@ class ModsView(View):
             self.warning_label.configure(
                 text=("  " + "  ".join(warnings)) if warnings else ""
             )
-            self.count_chip.configure(text=f"{len(mods)} found")
+            self._update_count_chip()
             self._apply_filter()
             self.app.sync_view.refresh_selection_chip()
 
@@ -544,24 +618,61 @@ class ModsView(View):
             text_color=TEXT_DIM,
         ).pack(pady=32)
 
+    def _update_count_chip(self) -> None:
+        total = len(self.mods)
+        synced = sum(1 for m in self.mods if self.app.cfg.is_mod_synced(m.sha1))
+        self.count_chip.configure(text=f"{total} found  ·  {synced} selected")
+
+    def _focus_search(self) -> None:
+        """Ctrl+F: navigate to Mods and focus the search box."""
+        self.app._show_section("mods")
+        if self._search_entry:
+            self._search_entry.focus_set()
+            self._search_entry.select_range(0, "end")
+
+    def _set_filter_mode(self, mode: str) -> None:
+        self._filter_mode = mode
+        for m, btn in self._filter_btns.items():
+            if m == mode:
+                btn.configure(fg_color=PRIMARY_SOFT, text_color=TEXT, border_color=PRIMARY_SOFT)
+            else:
+                btn.configure(fg_color="transparent", text_color=TEXT_DIM, border_color=SURFACE_HI)
+        self._apply_filter()
+
     def _apply_filter(self) -> None:
         q = self.search_var.get().strip().lower()
         for child in self.list_frame.winfo_children():
             child.destroy()
         filtered = [
-            m
-            for m in self.mods
-            if not q
-            or q in m.best_name.lower()
-            or q in m.filename.lower()
-            or q in (m.mod_id or "").lower()
+            m for m in self.mods
+            if (not q or q in m.best_name.lower() or q in m.filename.lower() or q in (m.mod_id or "").lower())
+            and (
+                self._filter_mode == "all"
+                or (self._filter_mode == "synced" and self.app.cfg.is_mod_synced(m.sha1))
+                or (self._filter_mode == "unsynced" and not self.app.cfg.is_mod_synced(m.sha1))
+            )
         ]
+        sort_key = self._sort_var.get() if self._sort_var else "Name A–Z"
+        if sort_key == "Name A–Z":
+            filtered.sort(key=lambda m: m.best_name.lower())
+        elif sort_key == "Name Z–A":
+            filtered.sort(key=lambda m: m.best_name.lower(), reverse=True)
+        elif sort_key == "Size ↓":
+            filtered.sort(key=lambda m: m.size, reverse=True)
+        elif sort_key == "Size ↑":
+            filtered.sort(key=lambda m: m.size)
+        elif sort_key == "Synced first":
+            filtered.sort(key=lambda m: (not self.app.cfg.is_mod_synced(m.sha1), m.best_name.lower()))
         if not filtered:
+            no_mods = not self.mods
             _empty_state(
                 self.list_frame,
-                title="No mods" if not q else "No matches",
-                hint=("Drop .jar files into your mods folder, then Refresh." if not q
-                      else f"Nothing matches “{q}”."),
+                title="No mods" if no_mods else "No matches",
+                hint=(
+                    "Drop .jar files into your mods folder, then Refresh."
+                    if no_mods
+                    else (f'Nothing matches "{q}".' if q else f"No {self._filter_mode} mods.")
+                ),
             )
             return
         for mod in filtered:
@@ -621,21 +732,31 @@ class ModsView(View):
             anchor="w",
         ).pack(fill="x", pady=(2, 0))
 
-        # Right: status pill
+        # Right: status pill + optional Modrinth link
         right = ctk.CTkFrame(row, fg_color="transparent")
         right.pack(side="right", padx=14, pady=10)
         color, soft, text = _mod_status(mod)
         _pill(right, text, color, soft).pack(side="right")
+        if mod.modrinth_page_url:
+            ghost_button(
+                right,
+                text="↗",
+                width=32,
+                height=28,
+                command=lambda url=mod.modrinth_page_url: webbrowser.open(url),
+            ).pack(side="right", padx=(0, 6))
 
     def _on_toggle(self, sha1: str, synced: bool) -> None:
         self.app.cfg.set_mod_synced(sha1, synced)
         self.app.cfg.save()
+        self._update_count_chip()
         self.app.sync_view.refresh_selection_chip()
 
     def _select_all(self) -> None:
         for mod in self.mods:
             self.app.cfg.set_mod_synced(mod.sha1, True)
         self.app.cfg.save()
+        self._update_count_chip()
         self.app.sync_view.refresh_selection_chip()
         self._apply_filter()
 
@@ -643,6 +764,7 @@ class ModsView(View):
         for mod in self.mods:
             self.app.cfg.set_mod_synced(mod.sha1, False)
         self.app.cfg.save()
+        self._update_count_chip()
         self.app.sync_view.refresh_selection_chip()
         self._apply_filter()
 
@@ -1446,14 +1568,28 @@ class SettingsView(View):
     def _update_auth_status(self) -> None:
         """Update the displayed authentication status."""
         if self.app.cfg.access_token:
+            expires_at = self.app.cfg.access_token_expires_at
+            remaining = expires_at - time.time() if expires_at else 0
+            if remaining > 3600:
+                exp = f"expires in {int(remaining // 3600)}h {int((remaining % 3600) // 60)}m"
+                color = SUCCESS
+            elif remaining > 300:
+                exp = f"expires in {int(remaining // 60)}m"
+                color = SUCCESS
+            elif remaining > 0:
+                exp = f"expires in {int(remaining)}s — refresh soon"
+                color = WARNING
+            else:
+                exp = "token may be expired — please sign in again"
+                color = WARNING
             self.auth_status.configure(
-                text="✓ Authenticated via PD OAuth",
-                text_color=SUCCESS
+                text=f"✓ Signed in via PD OAuth  ({exp})",
+                text_color=color,
             )
         else:
             self.auth_status.configure(
                 text="Not authenticated. Sign in to sync mods.",
-                text_color=TEXT_DIM
+                text_color=TEXT_DIM,
             )
 
     def _oauth_login(self) -> None:
@@ -1469,11 +1605,11 @@ class SettingsView(View):
                 auth = OAuthAuthenticator(config)
                 auth_url = auth.authorize_url()
 
+                server = OAuthCallbackServer()
+                server.prepare()  # bind port BEFORE browser navigates back
                 import webbrowser
                 webbrowser.open(auth_url)
-
-                server = OAuthCallbackServer()
-                server.start()
+                server.wait()
 
                 if server.error:
                     raise Exception(f"OAuth error: {server.error}")
@@ -1663,10 +1799,10 @@ def _empty_state(parent, title: str, hint: str) -> None:
 
 
 def _ensure_configured(app: "FragApp") -> bool:
-    if not app.cfg.server_url or not app.cfg.auth_token:
+    if not app.cfg.server_url or not app.cfg.access_token:
         messagebox.showwarning(
             "Frag",
-            "Set your server URL and auth token in the Settings section first.",
+            "Sign in via the Settings page before uploading or downloading.",
         )
         app._show_section("settings")
         return False
@@ -1674,6 +1810,17 @@ def _ensure_configured(app: "FragApp") -> bool:
 
 
 def run() -> None:
+    if os.environ.get("FRAG_FROM_LAUNCHER") != "1":
+        import tkinter.messagebox as _mb
+        _root = tk.Tk()
+        _root.withdraw()
+        _mb.showerror(
+            "Frag",
+            "Please launch Frag using the launcher (launcher.py or Frag.exe).\n"
+            "Running the app directly is not supported.",
+        )
+        _root.destroy()
+        return
     app = FragApp()
     app.mainloop()
 

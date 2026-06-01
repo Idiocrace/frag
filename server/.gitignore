@@ -1,1 +1,3 @@
 /tokens.db
+/.venv
+/__pycache__/

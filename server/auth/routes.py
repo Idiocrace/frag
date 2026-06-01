@@ -8,11 +8,11 @@ import logging
 
 from flask import Blueprint, render_template, redirect, request, session, url_for
 
-from server.auth.accounts import AccountStore
-from server.auth.mailer import Mailer
-from server.auth.mfa import MFAStore, user_needs_mfa
-from server.auth.passwords import hash_password, verify_password
-from server.auth.templates import AccountTemplate
+from auth.accounts import AccountStore
+from auth.mailer import Mailer
+from auth.mfa import MFAStore, user_needs_mfa
+from auth.passwords import hash_password, verify_password
+from auth.templates import AccountTemplate
 
 
 log = logging.getLogger(__name__)

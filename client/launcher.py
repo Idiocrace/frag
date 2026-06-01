@@ -52,7 +52,8 @@ def find_main_app() -> list[str] | None:
 
 
 def launch(cmd: list[str]) -> None:
-    kwargs: dict = {"close_fds": True}
+    env = {**os.environ, "FRAG_FROM_LAUNCHER": "1"}
+    kwargs: dict = {"close_fds": True, "env": env}
     if os.name == "nt":
         # DETACHED_PROCESS so the launcher can exit cleanly without holding the child
         kwargs["creationflags"] = 0x00000008

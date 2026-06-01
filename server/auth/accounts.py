@@ -7,7 +7,7 @@ tests and local development.
 
 from typing import Protocol, Optional
 
-from server.auth.passwords import hash_password, is_hashed
+from auth.passwords import hash_password, is_hashed
 
 
 class AccountStore(Protocol):

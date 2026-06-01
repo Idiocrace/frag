@@ -1,24 +1,16 @@
 import os
 import re
-import jwt
 import time
-import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 from functools import wraps
-from typing import Optional
 
 import requests
 from werkzeug.utils import secure_filename
 from flask import Flask, request, jsonify, abort, redirect, send_from_directory, g
-from auth import validate_token
+from auth import decode_token, validate_token
 
 app = Flask("frag_backend_v1")
-
-SECRET_KEY = os.environ.get("FRAG_SECRET_KEY", "SecretKeyForFrag!!!v1:3anda<3")
-PD_OAUTH_URL = os.environ.get("PD_OAUTH_URL", "https://pixelateddream.net")
-PD_OAUTH_JWKS_CACHE: Optional[dict] = None
-PD_OAUTH_JWKS_CACHE_TIME = 0
 
 USER_DATA_ROOT = Path(os.environ.get("FRAG_USER_DATA_ROOT", "userdata")).resolve()
 MAX_FILE_BYTES = int(
@@ -48,51 +40,9 @@ def user_agent_required(f):
     return wrapper
 
 
-def _get_pd_jwks() -> dict:
-    """Fetch and cache PD OAuth JWKS."""
-    global PD_OAUTH_JWKS_CACHE, PD_OAUTH_JWKS_CACHE_TIME
-    now = time.time()
-    if PD_OAUTH_JWKS_CACHE and (now - PD_OAUTH_JWKS_CACHE_TIME) < 3600:
-        return PD_OAUTH_JWKS_CACHE
-    try:
-        resp = requests.get(f"{PD_OAUTH_URL}/.well-known/jwks.json", timeout=5)
-        resp.raise_for_status()
-        PD_OAUTH_JWKS_CACHE = resp.json()
-        PD_OAUTH_JWKS_CACHE_TIME = now
-        return PD_OAUTH_JWKS_CACHE
-    except Exception:
-        return PD_OAUTH_JWKS_CACHE or {"keys": []}
-
-
-def _verify_pd_oauth_token(token: str) -> dict:
-    """Verify and decode a PD OAuth access token (RS256 JWT)."""
-    try:
-        header = jwt.get_unverified_header(token)
-        kid = header.get("kid")
-
-        jwks = _get_pd_jwks()
-        key = None
-        for k in jwks.get("keys", []):
-            if k.get("kid") == kid:
-                key = jwt.algorithms.RSAAlgorithm.from_jwk(__import__("json").dumps(k))
-                break
-
-        if not key:
-            return None
-
-        claims = jwt.decode(
-            token,
-            key,
-            algorithms=["RS256"],
-            options={"verify_exp": True}
-        )
-        return claims
-    except jwt.PyJWTError:
-        return None
-
-
 def token_required(f):
-    """Verify bearer token (OAuth JWT from PD or local HS256)."""
+    """Verify bearer token and populate g.user from normalized claims."""
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         auth_header = request.headers.get("Authorization")
@@ -100,35 +50,18 @@ def token_required(f):
         if not auth_header or not auth_header.startswith("Bearer "):
             return jsonify({"error": "Missing token"}), 401
 
-        token = auth_header.split(" ")[1]
-        data = None
-
-        # Try PD OAuth token first (RS256)
-        data = _verify_pd_oauth_token(token)
-
-        # Fall back to legacy HS256 token
-        if not data:
-            try:
-                data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-            except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-                return jsonify({"error": "Invalid or expired token"}), 401
-
-        if not data:
+        token = auth_header.split(" ", 1)[1]
+        claims = decode_token(token)
+        if not claims:
             return jsonify({"error": "Invalid token"}), 401
+        user_id = claims.get("user_id")
+        if not user_id or not USER_ID_RE.match(user_id):
+            return jsonify({"error": "Invalid token subject"}), 401
 
-        g.user = data
+        g.user = {"user_id": user_id, "claims": claims}
         return f(*args, **kwargs)
 
     return wrapper
-
-
-def create_token(user_id: str):
-    payload = {
-        "user_id": user_id,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=24),
-    }
-
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
 
 @app.route("/frag/v1/ping", methods=["POST"])
@@ -145,6 +78,10 @@ def ping():
 @app.route("/frag/v1/authenticate", methods=["POST", "GET"])
 @user_agent_required
 def authenticate():
+    """Legacy compatibility endpoint used by old clients.
+
+    New clients should send OAuth access tokens directly in Authorization.
+    """
     token = request.args.get("token")
 
     if not token:
@@ -154,10 +91,16 @@ def authenticate():
 
     if not validate_token(token):
         return jsonify({"error": "Unauthorized.", "message": "Invalid token."}), 401
-
-    jwt_token = create_token(token)
-
-    return jsonify({"message": "Authentication successful.", "jwt": jwt_token})
+    claims = decode_token(token) or {}
+    return jsonify(
+        {
+            "message": "Authentication successful.",
+            "user_id": claims.get("user_id", ""),
+            "token_type": "Bearer",
+            "access_token": token,
+            "legacy": True,
+        }
+    )
 
 
 @app.route("/frag/v1/fetch-data", methods=["POST", "GET"])

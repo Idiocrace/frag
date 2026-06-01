@@ -4,17 +4,18 @@ Exposes a Flask Blueprint plus the building blocks (account store, mailer,
 MFA store, permission checks) so they can be reused or replaced by tests.
 """
 
-from server.auth.accounts import (
+from auth.accounts import (
     AccountStore,
     FirestoreAccountStore,
     InMemoryAccountStore,
 )
-from server.auth.passwords import hash_password, verify_password
-from server.auth.mfa import MFAStore, InMemoryMFAStore
-from server.auth.mailer import Mailer, SMTPMailer, NullMailer
-from server.auth.permissions import is_admin, has_flag
-from server.auth.templates import AccountTemplate
-from server.auth.routes import create_auth_blueprint
+from auth.passwords import hash_password, verify_password
+from auth.mfa import MFAStore, InMemoryMFAStore
+from auth.mailer import Mailer, SMTPMailer, NullMailer
+from auth.permissions import is_admin, has_flag
+from auth.templates import AccountTemplate
+from auth.routes import create_auth_blueprint
+from auth.tokens import AuthTokenVerifier, decode_token, validate_token
 
 __all__ = [
     "AccountStore",
@@ -31,4 +32,7 @@ __all__ = [
     "has_flag",
     "AccountTemplate",
     "create_auth_blueprint",
+    "AuthTokenVerifier",
+    "decode_token",
+    "validate_token",
 ]

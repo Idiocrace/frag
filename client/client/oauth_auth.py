@@ -6,10 +6,14 @@ Tokens are RS256-signed JWTs that can be verified locally.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
+import threading
+import time
 import urllib.parse
 import webbrowser
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
 import json
@@ -176,22 +180,26 @@ class OAuthCallbackServer:
         self.code: Optional[str] = None
         self.state: Optional[str] = None
         self.error: Optional[str] = None
+        self._http: Optional[HTTPServer] = None
+        self._done = threading.Event()
+
+    def prepare(self) -> None:
+        """Bind the socket so the port is ready *before* the browser navigates back."""
+        self._http = HTTPServer((self.host, self.port), self._make_handler())
+        self._http.timeout = 1  # short so wait() can poll _done
+
+    def wait(self, timeout: float = 300.0) -> None:
+        """Block until the callback is received or *timeout* seconds pass."""
+        if self._http is None:
+            self.prepare()
+        deadline = time.monotonic() + timeout
+        while not self._done.is_set() and time.monotonic() < deadline:
+            self._http.handle_request()
 
     def start(self) -> None:
-        """Start the callback server. Blocks until callback is received or timeout."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        import threading
-
-        handler = self._make_handler()
-        server = HTTPServer((self.host, self.port), handler)
-        server.timeout = 300
-
-        def run_server():
-            server.handle_request()
-
-        thread = threading.Thread(target=run_server, daemon=True)
-        thread.start()
-        thread.join(timeout=300)
+        """Convenience wrapper: prepare + wait (original single-call API)."""
+        self.prepare()
+        self.wait()
 
     def _make_handler(self):
         """Create the request handler class."""
@@ -226,10 +234,9 @@ class OAuthCallbackServer:
                 else:
                     self.send_error(400, "Missing code")
 
+                server._done.set()
+
             def log_message(self, format, *args):
                 pass
 
         return CallbackHandler
-
-
-import base64
