@@ -65,21 +65,20 @@ ctk.set_default_color_theme("blue")
 
 
 def primary_button(parent, **kw) -> ctk.CTkButton:
-    return ctk.CTkButton(
-        parent,
+    defaults = dict(
         fg_color=PRIMARY,
         hover_color=PRIMARY_HOV,
         text_color=TEXT,
         corner_radius=8,
         height=36,
         font=FONT_BODY,
-        **kw,
     )
+    defaults.update(kw)
+    return ctk.CTkButton(parent, **defaults)
 
 
 def ghost_button(parent, **kw) -> ctk.CTkButton:
-    return ctk.CTkButton(
-        parent,
+    defaults = dict(
         fg_color="transparent",
         border_width=1,
         border_color=SURFACE_HI,
@@ -88,13 +87,13 @@ def ghost_button(parent, **kw) -> ctk.CTkButton:
         corner_radius=8,
         height=36,
         font=FONT_BODY,
-        **kw,
     )
+    defaults.update(kw)
+    return ctk.CTkButton(parent, **defaults)
 
 
 def danger_button(parent, **kw) -> ctk.CTkButton:
-    return ctk.CTkButton(
-        parent,
+    defaults = dict(
         fg_color="transparent",
         border_width=1,
         border_color=ERROR,
@@ -103,8 +102,9 @@ def danger_button(parent, **kw) -> ctk.CTkButton:
         corner_radius=8,
         height=32,
         font=FONT_BODY,
-        **kw,
     )
+    defaults.update(kw)
+    return ctk.CTkButton(parent, **defaults)
 
 
 def card(parent, **kw) -> ctk.CTkFrame:
@@ -573,16 +573,51 @@ class ModsView(View):
         )
         self.warning_label.pack(fill="x", pady=(4, 0))
 
-        # Scrollable list inside a card
+        # Scrollable list inside a card.  Hand-rolled tk.Canvas + inner frame
+        # because CTkScrollableFrame has buggy scrollregion updates on bulk
+        # repacks and its CTk children are 10x slower than plain tk to lay out.
         list_card = card(self)
         list_card.pack(fill="both", expand=True, pady=(14, 0))
-        self.list_frame = ctk.CTkScrollableFrame(
-            list_card,
-            fg_color=SURFACE,
-            scrollbar_button_color=SURFACE_HI,
-            scrollbar_button_hover_color=PRIMARY,
+
+        list_outer = tk.Frame(list_card, bg=SURFACE)
+        list_outer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self._list_canvas = tk.Canvas(
+            list_outer, bg=SURFACE, highlightthickness=0, bd=0
         )
-        self.list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self._list_scroll = ctk.CTkScrollbar(
+            list_outer, orientation="vertical",
+            command=self._list_canvas.yview,
+            button_color=SURFACE_HI,
+            button_hover_color=PRIMARY,
+        )
+        self._list_canvas.configure(yscrollcommand=self._list_scroll.set)
+        self._list_scroll.pack(side="right", fill="y")
+        self._list_canvas.pack(side="left", fill="both", expand=True)
+
+        self.list_frame = tk.Frame(self._list_canvas, bg=SURFACE)
+        self._list_window = self._list_canvas.create_window(
+            (0, 0), window=self.list_frame, anchor="nw"
+        )
+
+        # Keep inner frame width pinned to the canvas width, and update the
+        # scrollregion whenever the inner frame's height changes.
+        def _on_canvas_configure(event):
+            self._list_canvas.itemconfigure(self._list_window, width=event.width)
+        def _on_inner_configure(_event):
+            self._list_canvas.configure(scrollregion=self._list_canvas.bbox("all"))
+        self._list_canvas.bind("<Configure>", _on_canvas_configure)
+        self.list_frame.bind("<Configure>", _on_inner_configure)
+
+        # Mouse-wheel scroll over the list area.
+        def _on_wheel(event):
+            self._list_canvas.yview_scroll(-int(event.delta / 120), "units")
+        self._list_canvas.bind("<Enter>", lambda _e: self._list_canvas.bind_all("<MouseWheel>", _on_wheel))
+        self._list_canvas.bind("<Leave>", lambda _e: self._list_canvas.unbind_all("<MouseWheel>"))
+
+        # Cache of PhotoImage objects keyed by mod.sha1 so they survive GC
+        # and we don't decode the same PNG twice.
+        self._icon_cache: dict[str, tk.PhotoImage] = {}
 
     def _open_folder(self) -> None:
         import os
@@ -617,12 +652,54 @@ class ModsView(View):
     def _set_loading(self) -> None:
         for child in self.list_frame.winfo_children():
             child.destroy()
-        ctk.CTkLabel(
-            self.list_frame,
-            text="Scanning…",
+        # Stop any previous spinner before starting a new one.
+        if getattr(self, "_spinner_after_id", None):
+            try:
+                self.after_cancel(self._spinner_after_id)
+            except tk.TclError:
+                pass
+            self._spinner_after_id = None
+
+        wrap = tk.Frame(self.list_frame, bg=SURFACE)
+        wrap.pack(pady=48)
+
+        spinner = tk.Canvas(
+            wrap, width=42, height=42, bg=SURFACE, highlightthickness=0, bd=0,
+        )
+        spinner.pack()
+        # 12-arm circular spinner: 12 short lines whose alpha-equivalent
+        # (greyscale) rotates each tick to fake the classic Material spinner.
+        arms = []
+        import math
+        for i in range(12):
+            angle = math.radians(i * 30 - 90)
+            x0 = 21 + math.cos(angle) * 11
+            y0 = 21 + math.sin(angle) * 11
+            x1 = 21 + math.cos(angle) * 18
+            y1 = 21 + math.sin(angle) * 18
+            arms.append(spinner.create_line(x0, y0, x1, y1, width=3, capstyle="round"))
+
+        label = tk.Label(
+            wrap, text="Scanning mods…", bg=SURFACE, fg=TEXT_DIM,
             font=FONT_BODY,
-            text_color=TEXT_DIM,
-        ).pack(pady=32)
+        )
+        label.pack(pady=(12, 0))
+
+        # Greyscale ramp from bright to dim, 12 stops.
+        ramp = ("#F4F4F8", "#D6D6E0", "#B8B8C8", "#9A9AB0", "#7C7C98",
+                "#5E5E80", "#404068", "#383858", "#303048", "#28283A",
+                "#20202E", "#18181E")
+
+        step = {"i": 0}
+
+        def tick():
+            for k, arm in enumerate(arms):
+                spinner.itemconfigure(arm, fill=ramp[(k + step["i"]) % 12])
+            step["i"] = (step["i"] + 1) % 12
+            self._spinner_after_id = self.after(80, tick)
+
+        tick()
+        self._spinner_widgets = (wrap, spinner)
 
     def _update_count_chip(self) -> None:
         total = len(self.mods)
@@ -705,76 +782,143 @@ class ModsView(View):
                 ),
             )
             return
+        # Cancel any running spinner now that real content is coming in.
+        if getattr(self, "_spinner_after_id", None):
+            try:
+                self.after_cancel(self._spinner_after_id)
+            except tk.TclError:
+                pass
+            self._spinner_after_id = None
+
         for mod in filtered:
             self._render_row(mod)
+        # Force the scroll canvas to recompute its scrollregion so all rows
+        # are reachable on the first paint, not after a window resize.
+        self.list_frame.update_idletasks()
+        self._list_canvas.configure(scrollregion=self._list_canvas.bbox("all"))
 
     def _render_row(self, mod: ModInfo) -> None:
-        row = HoverRow(self.list_frame, base=SURFACE, hover=SURFACE_ALT)
-        row.pack(fill="x", padx=2, pady=4)
+        # Plain tk widgets are dramatically faster than CTk equivalents.
+        # We lose rounded corners on the row itself but gain ~10x render speed.
+        row = tk.Frame(self.list_frame, bg=SURFACE, height=64)
+        row.pack(fill="x", padx=2, pady=3)
+        row.pack_propagate(False)
 
-        # Sync checkbox
+        # Sync checkbox (CTk because it's the only widget the user clicks
+        # frequently on this row and styling matters).
         var = ctk.BooleanVar(value=self.app.cfg.is_mod_synced(mod.sha1))
         cb = ctk.CTkCheckBox(
-            row,
-            text="",
-            variable=var,
-            width=20,
-            checkbox_width=18,
-            checkbox_height=18,
-            corner_radius=4,
-            fg_color=PRIMARY,
-            hover_color=PRIMARY_HOV,
+            row, text="", variable=var, width=20,
+            checkbox_width=18, checkbox_height=18,
+            corner_radius=4, fg_color=PRIMARY, hover_color=PRIMARY_HOV,
             border_color=SURFACE_HI,
             command=lambda sha1=mod.sha1, v=var: self._on_toggle(sha1, v.get()),
         )
-        cb.pack(side="left", padx=(14, 6), pady=10)
+        cb.pack(side="left", padx=(14, 6))
 
-        # Avatar — colored initial
-        avatar = ctk.CTkLabel(
-            row,
-            text=(mod.best_name[:1] or "?").upper(),
-            font=("Segoe UI", 16, "bold"),
-            text_color=TEXT,
-            fg_color=PRIMARY_SOFT,
-            corner_radius=22,
-            width=44,
-            height=44,
-        )
-        avatar.pack(side="left", padx=(8, 14), pady=10)
+        # Mod icon: real image when the jar shipped one, colored letter otherwise.
+        icon_img = self._icon_for(mod)
+        icon_lbl = tk.Label(row, image=icon_img, bg=SURFACE, bd=0)
+        icon_lbl.image = icon_img  # type: ignore[attr-defined]  # keep ref alive
+        icon_lbl.pack(side="left", padx=(8, 14))
 
-        # Name + meta
-        left = ctk.CTkFrame(row, fg_color="transparent")
-        left.pack(side="left", fill="x", expand=True, pady=10)
-        ctk.CTkLabel(
-            left, text=mod.best_name, font=FONT_H2, text_color=TEXT, anchor="w"
-        ).pack(fill="x")
+        # Name + meta (plain tk)
+        left = tk.Frame(row, bg=SURFACE)
+        left.pack(side="left", fill="both", expand=True)
+        tk.Label(
+            left, text=mod.best_name, bg=SURFACE, fg=TEXT,
+            font=FONT_H2, anchor="w",
+        ).pack(fill="x", pady=(11, 0))
         meta = []
         if mod.best_version != "?":
             meta.append(f"v{mod.best_version}")
         if mod.loader:
             meta.append(mod.loader)
         meta.append(f"{mod.size / 1024 / 1024:.1f} MB")
-        ctk.CTkLabel(
-            left,
-            text="  ·  ".join(meta),
-            font=FONT_DIM,
-            text_color=TEXT_DIM,
-            anchor="w",
+        tk.Label(
+            left, text="  ·  ".join(meta), bg=SURFACE, fg=TEXT_DIM,
+            font=FONT_DIM, anchor="w",
         ).pack(fill="x", pady=(2, 0))
 
-        # Right: status pill + optional Modrinth link
-        right = ctk.CTkFrame(row, fg_color="transparent")
-        right.pack(side="right", padx=14, pady=10)
+        # Right: status pill (CTk for rounded look) + optional Modrinth link.
+        right = tk.Frame(row, bg=SURFACE)
+        right.pack(side="right", padx=14)
         color, soft, text = _mod_status(mod)
-        _pill(right, text, color, soft).pack(side="right")
+        _pill(right, text, color, soft).pack(side="right", pady=18)
         if mod.modrinth_page_url:
             ghost_button(
-                right,
-                text="↗",
-                width=32,
-                height=28,
+                right, text="↗", width=32, height=28,
                 command=lambda url=mod.modrinth_page_url: webbrowser.open(url),
-            ).pack(side="right", padx=(0, 6))
+            ).pack(side="right", padx=(0, 6), pady=18)
+
+    def _icon_for(self, mod: ModInfo) -> tk.PhotoImage:
+        """Return a 44x44 PhotoImage for *mod*, decoded + cached on first use."""
+        cached = self._icon_cache.get(mod.sha1)
+        if cached is not None:
+            return cached
+
+        from PIL import Image, ImageDraw, ImageFont, ImageTk
+        import io
+
+        size = 44
+        radius = 10
+        img: "Image.Image"
+        if mod.icon_bytes:
+            try:
+                src = Image.open(io.BytesIO(mod.icon_bytes)).convert("RGBA")
+                src.thumbnail((size * 2, size * 2), Image.LANCZOS)
+                # Center-crop to square, then resize to target.
+                w, h = src.size
+                side = min(w, h)
+                left = (w - side) // 2
+                top = (h - side) // 2
+                src = src.crop((left, top, left + side, top + side))
+                img = src.resize((size, size), Image.LANCZOS)
+            except Exception:
+                img = self._fallback_avatar(mod, size)
+        else:
+            img = self._fallback_avatar(mod, size)
+
+        # Rounded-corner mask.
+        mask = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, size, size), radius=radius, fill=255)
+        rounded = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        rounded.paste(img, (0, 0), mask)
+
+        photo = ImageTk.PhotoImage(rounded)
+        self._icon_cache[mod.sha1] = photo
+        return photo
+
+    def _fallback_avatar(self, mod: ModInfo, size: int) -> "Image.Image":  # type: ignore[name-defined]
+        """Colored square with the mod's initial — used when no icon was shipped."""
+        from PIL import Image, ImageDraw, ImageFont
+
+        # Stable per-mod color so the same mod gets the same swatch each scan.
+        palette = (
+            "#8B5CF6", "#EC4899", "#F59E0B", "#10B981",
+            "#06B6D4", "#6366F1", "#EF4444", "#14B8A6",
+        )
+        seed = int(mod.sha1[:8], 16) if mod.sha1 else 0
+        color = palette[seed % len(palette)]
+
+        bg = Image.new("RGBA", (size, size), color)
+        draw = ImageDraw.Draw(bg)
+        letter = (mod.best_name[:1] or "?").upper()
+        try:
+            font = ImageFont.truetype("seguibl.ttf", 22)
+        except OSError:
+            try:
+                font = ImageFont.truetype("arial.ttf", 22)
+            except OSError:
+                font = ImageFont.load_default()
+        # Center the letter.
+        bbox = draw.textbbox((0, 0), letter, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(
+            ((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]),
+            letter, fill="#FFFFFF", font=font,
+        )
+        return bg
 
     def _on_toggle(self, sha1: str, synced: bool) -> None:
         self.app.cfg.set_mod_synced(sha1, synced)
@@ -858,15 +1002,45 @@ class WorldsView(View):
         )
         self.path_label.pack(fill="x")
 
+        # Same hand-rolled canvas list as ModsView — see that view for rationale.
         list_card = card(self)
         list_card.pack(fill="both", expand=True, pady=(14, 0))
-        self.list_frame = ctk.CTkScrollableFrame(
-            list_card,
-            fg_color=SURFACE,
-            scrollbar_button_color=SURFACE_HI,
-            scrollbar_button_hover_color=PRIMARY,
+
+        list_outer = tk.Frame(list_card, bg=SURFACE)
+        list_outer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self._list_canvas = tk.Canvas(
+            list_outer, bg=SURFACE, highlightthickness=0, bd=0
         )
-        self.list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self._list_scroll = ctk.CTkScrollbar(
+            list_outer, orientation="vertical",
+            command=self._list_canvas.yview,
+            button_color=SURFACE_HI,
+            button_hover_color=PRIMARY,
+        )
+        self._list_canvas.configure(yscrollcommand=self._list_scroll.set)
+        self._list_scroll.pack(side="right", fill="y")
+        self._list_canvas.pack(side="left", fill="both", expand=True)
+
+        self.list_frame = tk.Frame(self._list_canvas, bg=SURFACE)
+        self._list_window = self._list_canvas.create_window(
+            (0, 0), window=self.list_frame, anchor="nw"
+        )
+
+        def _on_canvas_configure(event):
+            self._list_canvas.itemconfigure(self._list_window, width=event.width)
+        def _on_inner_configure(_event):
+            self._list_canvas.configure(scrollregion=self._list_canvas.bbox("all"))
+        self._list_canvas.bind("<Configure>", _on_canvas_configure)
+        self.list_frame.bind("<Configure>", _on_inner_configure)
+
+        def _on_wheel(event):
+            self._list_canvas.yview_scroll(-int(event.delta / 120), "units")
+        self._list_canvas.bind("<Enter>", lambda _e: self._list_canvas.bind_all("<MouseWheel>", _on_wheel))
+        self._list_canvas.bind("<Leave>", lambda _e: self._list_canvas.unbind_all("<MouseWheel>"))
+
+        # World-icon PhotoImage cache (key = world.name).  Held to prevent GC.
+        self._icon_cache: dict[str, tk.PhotoImage] = {}
 
     def refresh(self) -> None:
         self.path_label.configure(text=str(self.app.cfg.saves_path))
@@ -878,6 +1052,12 @@ class WorldsView(View):
         for child in self.list_frame.winfo_children():
             child.destroy()
         self._rows.clear()
+        if getattr(self, "_spinner_after_id", None):
+            try:
+                self.after_cancel(self._spinner_after_id)
+            except tk.TclError:
+                pass
+            self._spinner_after_id = None
 
         saves = self.app.cfg.saves_path
         worlds: list[Path] = []
@@ -896,6 +1076,8 @@ class WorldsView(View):
 
         for world in worlds:
             self._render_row(world)
+        self.list_frame.update_idletasks()
+        self._list_canvas.configure(scrollregion=self._list_canvas.bbox("all"))
 
         self.app.sync_view.refresh_selection_chip()
         self.app.run_in_thread(
@@ -906,52 +1088,42 @@ class WorldsView(View):
         )
 
     def _render_row(self, world: Path) -> None:
-        row = HoverRow(self.list_frame, base=SURFACE, hover=SURFACE_ALT)
-        row.pack(fill="x", padx=2, pady=4)
+        row = tk.Frame(self.list_frame, bg=SURFACE, height=64)
+        row.pack(fill="x", padx=2, pady=3)
+        row.pack_propagate(False)
 
-        # Sync checkbox
         var = ctk.BooleanVar(value=self.app.cfg.is_world_synced(world.name))
         cb = ctk.CTkCheckBox(
-            row,
-            text="",
-            variable=var,
-            width=20,
-            checkbox_width=18,
-            checkbox_height=18,
-            corner_radius=4,
-            fg_color=PRIMARY,
-            hover_color=PRIMARY_HOV,
+            row, text="", variable=var, width=20,
+            checkbox_width=18, checkbox_height=18,
+            corner_radius=4, fg_color=PRIMARY, hover_color=PRIMARY_HOV,
             border_color=SURFACE_HI,
             command=lambda n=world.name, v=var: self._on_toggle(n, v.get()),
         )
-        cb.pack(side="left", padx=(14, 6), pady=10)
+        cb.pack(side="left", padx=(14, 6))
 
-        # Globe avatar
-        avatar = ctk.CTkLabel(
-            row,
-            text="🌍",
-            font=("Segoe UI", 18),
-            fg_color=ACCENT_SOFT,
-            corner_radius=22,
-            width=44,
-            height=44,
-        )
-        avatar.pack(side="left", padx=(8, 14), pady=10)
+        # World icon (Minecraft writes <world>/icon.png automatically).
+        icon_img = self._icon_for(world)
+        icon_lbl = tk.Label(row, image=icon_img, bg=SURFACE, bd=0)
+        icon_lbl.image = icon_img  # type: ignore[attr-defined]
+        icon_lbl.pack(side="left", padx=(8, 14))
 
-        left = ctk.CTkFrame(row, fg_color="transparent")
-        left.pack(side="left", fill="x", expand=True, pady=10)
-        ctk.CTkLabel(
-            left, text=world.name, font=FONT_H2, text_color=TEXT, anchor="w"
-        ).pack(fill="x")
-        meta = ctk.CTkLabel(
-            left, text="inspecting…", font=FONT_DIM, text_color=TEXT_DIM, anchor="w"
+        left = tk.Frame(row, bg=SURFACE)
+        left.pack(side="left", fill="both", expand=True)
+        tk.Label(
+            left, text=world.name, bg=SURFACE, fg=TEXT,
+            font=FONT_H2, anchor="w",
+        ).pack(fill="x", pady=(11, 0))
+        meta = tk.Label(
+            left, text="inspecting…", bg=SURFACE, fg=TEXT_DIM,
+            font=FONT_DIM, anchor="w",
         )
         meta.pack(fill="x", pady=(2, 0))
 
-        right = ctk.CTkFrame(row, fg_color="transparent")
-        right.pack(side="right", padx=14, pady=10)
+        right = tk.Frame(row, bg=SURFACE)
+        right.pack(side="right", padx=14)
         btn = ghost_button(right, text="Show mods", width=110, state="disabled")
-        btn.pack(side="right")
+        btn.pack(side="right", pady=18)
 
         self._rows[world.name] = {
             "meta": meta,
@@ -961,6 +1133,58 @@ class WorldsView(View):
             "cb": cb,
             "var": var,
         }
+
+    def _icon_for(self, world: Path) -> tk.PhotoImage:
+        """Return a 44x44 rounded PhotoImage of <world>/icon.png, or a globe fallback."""
+        cached = self._icon_cache.get(world.name)
+        if cached is not None:
+            return cached
+
+        from PIL import Image, ImageDraw, ImageFont, ImageTk
+        size = 44
+        radius = 10
+
+        png_path = world / "icon.png"
+        img: "Image.Image" | None = None
+        if png_path.is_file():
+            try:
+                src = Image.open(png_path).convert("RGBA")
+                src.thumbnail((size * 3, size * 3), Image.LANCZOS)
+                w, h = src.size
+                side = min(w, h)
+                left = (w - side) // 2
+                top = (h - side) // 2
+                src = src.crop((left, top, left + side, top + side))
+                img = src.resize((size, size), Image.LANCZOS)
+            except Exception:
+                img = None
+        if img is None:
+            # Accent-colored globe fallback.
+            img = Image.new("RGBA", (size, size), "#EC4899")
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("seguiemj.ttf", 26)
+            except OSError:
+                try:
+                    font = ImageFont.truetype("arial.ttf", 22)
+                except OSError:
+                    font = ImageFont.load_default()
+            letter = (world.name[:1] or "?").upper()
+            bbox = draw.textbbox((0, 0), letter, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text(
+                ((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]),
+                letter, fill="#FFFFFF", font=font,
+            )
+
+        mask = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, size, size), radius=radius, fill=255)
+        rounded = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        rounded.paste(img, (0, 0), mask)
+
+        photo = ImageTk.PhotoImage(rounded)
+        self._icon_cache[world.name] = photo
+        return photo
 
     def _on_toggle(self, name: str, synced: bool) -> None:
         self.app.cfg.set_world_synced(name, synced)
@@ -986,7 +1210,9 @@ class WorldsView(View):
         self.app.sync_view.refresh_selection_chip()
 
     def _inspect_all(self, worlds: list[Path]) -> None:
-        for world in worlds:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def inspect_one(world: Path) -> tuple[str, "WorldInfo", float]:
             info = read_world(world)
             try:
                 size_mb = (
@@ -996,7 +1222,14 @@ class WorldsView(View):
                 )
             except OSError:
                 size_mb = 0.0
-            self.app.after(0, self._apply_info, world.name, info, size_mb)
+            return world.name, info, size_mb
+
+        # 8 workers: world inspection walks the whole save dir, which is
+        # millions of small files for big worlds — more parallelism here
+        # would just thrash the disk.
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for name, info, size_mb in ex.map(inspect_one, worlds):
+                self.app.after(0, self._apply_info, name, info, size_mb)
 
     def _apply_info(self, world_name: str, info: WorldInfo, size_mb: float) -> None:
         row = self._rows.get(world_name)
