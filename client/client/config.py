@@ -36,7 +36,7 @@ class Config:
     """Frag client configuration, split into device-local and cloud-synced sections."""
 
     # ---- device-local (not synced) -----------------------------------------
-    server_url: str = "https://frag.pixelateddream.net"  # frag backend URL
+    server_url: str = "https://frag.pixelateddream.net/"  # frag backend URL
     session_token: str = ""  # PD-brokered session token (pdb_...)
     session_expires_at: float = 0.0
     session_user_id: str = ""

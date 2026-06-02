@@ -1,13 +1,12 @@
-"""Splash launcher for Frag.
+"""Frag entry point.
 
-Shows a brief branded splash, then spawns the main app and exits.
-Uses stdlib Tk only so the compiled launcher stays small and starts instantly.
+Shows a brief branded splash on the stdlib Tk so startup feels instant,
+then tears it down and runs the main CustomTkinter app in the same process.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -36,28 +35,11 @@ def asset_dir() -> Path:
     return app_dir() / "assets"
 
 
-def find_main_app() -> list[str] | None:
-    base = app_dir()
-    # Compiled bundle: sibling exe produced by build.bat
-    for name in ("frag-app.exe", "FragApp.exe"):
-        candidate = base / name
-        if candidate.is_file():
-            return [str(candidate)]
-    # Dev mode: launch frag.py next to launcher
-    dev_entry = base / "frag.py"
-    if dev_entry.is_file():
-        return [sys.executable, str(dev_entry)]
-    # Fall back to module
-    return [sys.executable, "-m", "client"]
-
-
-def launch(cmd: list[str]) -> None:
-    env = {**os.environ, "FRAG_FROM_LAUNCHER": "1"}
-    kwargs: dict = {"close_fds": True, "env": env}
-    if os.name == "nt":
-        # DETACHED_PROCESS so the launcher can exit cleanly without holding the child
-        kwargs["creationflags"] = 0x00000008
-    subprocess.Popen(cmd, **kwargs)
+def _ensure_client_importable() -> None:
+    """Make sure the `client` package next to this file is importable."""
+    base = str(app_dir())
+    if base not in sys.path:
+        sys.path.insert(0, base)
 
 
 def build_splash() -> tk.Tk:
@@ -135,26 +117,24 @@ def build_splash() -> tk.Tk:
 
 
 def main() -> None:
-    cmd = find_main_app()
-    if cmd is None:
-        # Show a real window so the error isn't silent under --windowed
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror(
-            "Frag",
-            "Couldn't locate frag-app.exe next to this launcher.\nReinstall Frag.",
-        )
-        return
+    _ensure_client_importable()
+    # Signal to client.ui.run() that we came through the official entry point.
+    os.environ["FRAG_FROM_LAUNCHER"] = "1"
 
     root = build_splash()
 
     def go() -> None:
+        root.destroy()
         try:
-            launch(cmd)
-        except OSError as e:
+            from client.ui import run
+            run()
+        except Exception as e:
+            # Show a real dialog so failures aren't silent under --windowed
+            err = tk.Tk()
+            err.withdraw()
             messagebox.showerror("Frag", f"Failed to start Frag:\n{e}")
-        finally:
-            root.destroy()
+            err.destroy()
+            raise
 
     root.after(SPLASH_MS, go)
     root.mainloop()

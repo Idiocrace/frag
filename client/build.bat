@@ -31,10 +31,9 @@ echo Installing dependencies into build venv...
 "%PY%" -m pip install --disable-pip-version-check --quiet pyinstaller || goto :error
 
 echo Cleaning previous build artifacts...
-if exist build      rmdir /s /q build
-if exist dist       rmdir /s /q dist
-if exist frag-app.spec del /q frag-app.spec
-if exist Frag.spec     del /q Frag.spec
+if exist build  rmdir /s /q build
+if exist dist   rmdir /s /q dist
+if exist Frag.spec del /q Frag.spec
 
 REM Regenerate the icon if missing (Pillow lives in the build venv)
 if not exist assets\icon.ico (
@@ -44,41 +43,24 @@ if not exist assets\icon.ico (
 )
 
 echo.
-echo [1/2] Building main app (frag-app.exe, onedir)...
+echo Building Frag (Frag.exe, onedir)...
 "%PY%" -m PyInstaller ^
     --noconfirm ^
     --onedir ^
     --windowed ^
-    --name frag-app ^
+    --name Frag ^
     --icon assets\icon.ico ^
     --paths . ^
     --add-data "assets;assets" ^
     --collect-data customtkinter ^
     --collect-submodules customtkinter ^
     --collect-submodules nbtlib ^
-    frag.py || goto :error
-
-echo.
-echo [2/2] Building splash launcher (Frag.exe, onefile)...
-"%PY%" -m PyInstaller ^
-    --noconfirm ^
-    --onefile ^
-    --windowed ^
-    --name Frag ^
-    --icon assets\icon.ico ^
-    --add-data "assets;assets" ^
-    --distpath dist\frag-app ^
     launcher.py || goto :error
-
-REM Rename bundle dir for nicer presentation: dist\frag-app -> dist\Frag
-if exist dist\Frag rmdir /s /q dist\Frag
-move /y dist\frag-app dist\Frag >nul
 
 echo.
 echo === Build complete ===
 echo.
-echo Launcher  : dist\Frag\Frag.exe       ^<-- user clicks this; shows splash, starts the app
-echo Main app  : dist\Frag\frag-app.exe   ^<-- spawned by the launcher
+echo Launcher  : dist\Frag\Frag.exe       ^<-- user clicks this; splash + main app in one process
 echo Internals : dist\Frag\_internal\
 echo.
 echo Ship the entire 'dist\Frag\' directory.
