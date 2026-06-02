@@ -36,12 +36,10 @@ class Config:
     """Frag client configuration, split into device-local and cloud-synced sections."""
 
     # ---- device-local (not synced) -----------------------------------------
-    server_url: str = "https://pixelateddream.net"
-    pd_oauth_url: str = "https://pixelateddream.net"
-    access_token: str = ""  # OAuth access token (RS256 JWT)
-    access_token_expires_at: float = 0.0
-    id_token: str = ""  # OAuth ID token
-    refresh_token: str = ""  # OAuth refresh token (if available)
+    server_url: str = "https://frag.pixelateddream.net"  # frag backend URL
+    session_token: str = ""  # PD-brokered session token (pdb_...)
+    session_expires_at: float = 0.0
+    session_user_id: str = ""
     minecraft_dir: str = ""
     mods_dir: str = ""
     saves_dir: str = ""

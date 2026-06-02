@@ -1579,13 +1579,11 @@ class SettingsView(View):
         # Account
         acct = card(wrap)
         acct.pack(fill="x", pady=(0, 16))
-        _section_header(acct, "Account", "Sign in with Pixelated Dream")
+        _section_header(acct, "Account", "Sign in with your Pixelated Dream account")
         self.url_var = ctk.StringVar(value=self.app.cfg.server_url)
-        self.pd_url_var = ctk.StringVar(value=self.app.cfg.pd_oauth_url)
         _labeled(acct, "Frag Server URL", self.url_var)
-        _labeled(acct, "Pixelated Dream URL", self.pd_url_var)
 
-        # OAuth status
+        # Sign-in status
         self.auth_status = ctk.CTkLabel(
             acct, text="", font=FONT_DIM, text_color=TEXT_DIM, anchor="w"
         )
@@ -1594,10 +1592,10 @@ class SettingsView(View):
 
         btns = ctk.CTkFrame(acct, fg_color="transparent")
         btns.pack(fill="x", padx=22, pady=(10, 20))
-        primary_button(btns, text="Sign in with OAuth", command=self._oauth_login).pack(
+        primary_button(btns, text="Sign in with PD", command=self._auth_login).pack(
             side="left"
         )
-        ghost_button(btns, text="Sign out", command=self._oauth_logout).pack(
+        ghost_button(btns, text="Sign out", command=self._auth_logout).pack(
             side="left", padx=(8, 0)
         )
         self.account_status = ctk.CTkLabel(
@@ -1680,7 +1678,6 @@ class SettingsView(View):
     def _collect(self) -> None:
         cfg = self.app.cfg
         cfg.server_url = self.url_var.get().strip()
-        cfg.pd_oauth_url = self.pd_url_var.get().strip()
         cfg.minecraft_dir = self.mc_var.get().strip()
         cfg.mods_dir = self.mods_var.get().strip()
         cfg.saves_dir = self.saves_var.get().strip()
@@ -1697,75 +1694,63 @@ class SettingsView(View):
 
     def _update_auth_status(self) -> None:
         """Update the displayed authentication status."""
-        if self.app.cfg.access_token:
-            expires_at = self.app.cfg.access_token_expires_at
+        if self.app.cfg.session_token:
+            expires_at = self.app.cfg.session_expires_at
             remaining = expires_at - time.time() if expires_at else 0
-            if remaining > 3600:
-                exp = f"expires in {int(remaining // 3600)}h {int((remaining % 3600) // 60)}m"
+            if remaining > 86400:
+                exp = f"expires in {int(remaining // 86400)}d"
                 color = SUCCESS
-            elif remaining > 300:
-                exp = f"expires in {int(remaining // 60)}m"
+            elif remaining > 3600:
+                exp = f"expires in {int(remaining // 3600)}h"
                 color = SUCCESS
             elif remaining > 0:
-                exp = f"expires in {int(remaining)}s — refresh soon"
+                exp = f"expires in {int(remaining // 60)}m — sign in again soon"
                 color = WARNING
             else:
-                exp = "token may be expired — please sign in again"
+                exp = "session may be expired — please sign in again"
                 color = WARNING
+            user = self.app.cfg.session_user_id or "PD account"
             self.auth_status.configure(
-                text=f"✓ Signed in via PD OAuth  ({exp})",
+                text=f"✓ Signed in as {user}  ({exp})",
                 text_color=color,
             )
         else:
             self.auth_status.configure(
-                text="Not authenticated. Sign in to sync mods.",
+                text="Not signed in. Sign in to sync mods and worlds.",
                 text_color=TEXT_DIM,
             )
 
-    def _oauth_login(self) -> None:
-        """Initiate OAuth login flow."""
+    def _auth_login(self) -> None:
+        """Brokered login: ask frag server → open URL → poll until approved."""
+        from .api import FragAPIError
+        import webbrowser
+
         self._collect()
         self.app.cfg.save()
-        self.account_status.configure(text="Opening browser…", text_color=TEXT_DIM)
+        self.account_status.configure(text="Asking server…", text_color=TEXT_DIM)
 
         def work():
-            from client.oauth_auth import (
-                OAuthConfig,
-                OAuthAuthenticator,
-                OAuthCallbackServer,
-            )
+            client = self.app.client
+            start = client.start_auth()
+            handle = start.get("handle")
+            authorize_url = start.get("authorize_url")
+            if not handle or not authorize_url:
+                raise FragAPIError("Server returned an invalid login response.")
 
-            try:
-                config = OAuthConfig(self.app.cfg.pd_oauth_url)
-                auth = OAuthAuthenticator(config)
-                auth_url = auth.authorize_url()
+            webbrowser.open(authorize_url)
 
-                server = OAuthCallbackServer()
-                server.prepare()  # bind port BEFORE browser navigates back
-                import webbrowser
-
-                webbrowser.open(auth_url)
-                server.wait()
-
-                if server.error:
-                    raise Exception(f"OAuth error: {server.error}")
-                if not server.code:
-                    raise Exception("No authorization code received")
-
-                tokens = auth.exchange_code(server.code, server.state)
-                self.app.cfg.access_token = tokens.get("access_token", "")
-                self.app.cfg.id_token = tokens.get("id_token", "")
-                self.app.cfg.refresh_token = tokens.get("refresh_token", "")
-
-                import time
-
-                expires_in = tokens.get("expires_in", 3600)
-                self.app.cfg.access_token_expires_at = time.time() + expires_in
-
-                self.app.cfg.save()
-                return True
-            except Exception as e:
-                raise Exception(f"OAuth login failed: {e}")
+            # Poll for up to ~10 min, 2s interval. The frag server stores the
+            # session token on the client side via FragClient.poll_auth().
+            deadline = time.time() + 600
+            while time.time() < deadline:
+                result = client.poll_auth(handle)
+                status = result.get("status")
+                if status == "approved":
+                    return result
+                if status in ("denied", "expired"):
+                    raise FragAPIError(f"Sign-in {status}.")
+                time.sleep(2)
+            raise FragAPIError("Sign-in timed out. Please try again.")
 
         def done(_):
             self._update_auth_status()
@@ -1778,19 +1763,32 @@ class SettingsView(View):
             self.account_status.configure(text=f"✗  {e}", text_color=ERROR)
             self._update_auth_status()
 
-        self.app.run_in_thread(work, on_done=done, on_error=fail, status="Logging in…")
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status="Waiting for sign-in…"
+        )
 
-    def _oauth_logout(self) -> None:
-        """Sign out and clear tokens."""
-        if messagebox.askyesno("Frag", "Sign out and clear authentication?"):
-            self.app.cfg.access_token = ""
-            self.app.cfg.id_token = ""
-            self.app.cfg.refresh_token = ""
-            self.app.cfg.access_token_expires_at = 0.0
-            self.app.cfg.save()
+    def _auth_logout(self) -> None:
+        """Tell the server to revoke our session and clear local state."""
+        if not messagebox.askyesno("Frag", "Sign out and clear local session?"):
+            return
+
+        def work():
+            try:
+                self.app.client.logout()
+            except Exception:
+                # Even if the server is unreachable, drop the local session.
+                self.app.cfg.session_token = ""
+                self.app.cfg.session_user_id = ""
+                self.app.cfg.session_expires_at = 0.0
+                self.app.cfg.save()
+            return True
+
+        def done(_):
             self._update_auth_status()
             self.account_status.configure(text="✓  Signed out", text_color=TEXT_DIM)
             self.after(2000, lambda: self.account_status.configure(text=""))
+
+        self.app.run_in_thread(work, on_done=done, status="Signing out…")
 
     # ---- cloud sync ---------------------------------------------------------
 
@@ -1955,7 +1953,7 @@ def _empty_state(parent, title: str, hint: str) -> None:
 
 
 def _ensure_configured(app: "FragApp") -> bool:
-    if not app.cfg.server_url or not app.cfg.access_token:
+    if not app.cfg.server_url or not app.cfg.session_token:
         messagebox.showwarning(
             "Frag",
             "Sign in via the Settings page before uploading or downloading.",

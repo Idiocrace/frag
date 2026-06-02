@@ -2,6 +2,3 @@ customtkinter==5.2.2
 requests==2.32.3
 nbtlib==2.0.4
 pillow==12.1.0
-PyJWT==2.8.1
-cryptography==42.0.7
-

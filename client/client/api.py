@@ -1,7 +1,18 @@
-"""HTTP client for the PD API (Frag sync endpoints).
+"""HTTP client for the Frag backend.
 
-Points to the Pixelated Dream API at  /api/v1/frag/  by default.
-Set  server_url  in the client config to a local pdsite instance for dev.
+The Frag client never talks to pixelateddream.net directly. Auth is brokered:
+
+  1. ``start_auth()``   → asks the frag backend to begin a login. Backend calls
+                          PD, returns ``{handle, authorize_url}``.
+  2. Client opens ``authorize_url`` in the user's browser.
+  3. ``poll_auth(handle)`` → returns pending/approved/denied. On approval, the
+                              backend returns a ``session_token`` we store in
+                              the local config.
+  4. Every other call sends ``Authorization: Bearer <session_token>``.
+
+Configure ``server_url`` to point at your frag backend
+(e.g. ``https://frag.pixelateddream.net`` in prod, ``http://localhost:4543``
+for local dev).
 """
 
 from __future__ import annotations
@@ -17,13 +28,16 @@ from .config import Config
 
 USER_AGENT = "FragModdingClient/v1"
 DEFAULT_TIMEOUT = 30
-TOKEN_REFRESH_MARGIN = 5 * 60  # refresh if <5 min remaining
 
-_FRAG_PREFIX = "/api/v1/frag"
+_FRAG_PREFIX = "/frag/v1"
 
 
 class FragAPIError(Exception):
-    """Raised on any non-success Frag API response."""
+    """Raised on any non-success Frag backend response."""
+
+
+class FragAuthRequired(FragAPIError):
+    """Raised when the cached session is missing/expired and the user must sign in."""
 
 
 class FragClient:
@@ -34,22 +48,89 @@ class FragClient:
 
     # ---- auth ---------------------------------------------------------------
 
-    def _need_token_refresh(self) -> bool:
-        if not self.cfg.access_token:
-            return True
-        return time.time() + TOKEN_REFRESH_MARGIN >= self.cfg.access_token_expires_at
-
-    def validate_token(self) -> bool:
-        if not self.cfg.access_token:
+    def is_authed(self) -> bool:
+        """True if we have a session token and it isn't past its expiry."""
+        if not self.cfg.session_token:
             return False
-        return not self._need_token_refresh()
+        if self.cfg.session_expires_at and time.time() >= self.cfg.session_expires_at:
+            return False
+        return True
 
     def _authed(self) -> dict:
-        if self._need_token_refresh():
-            raise FragAPIError(
-                "Access token missing or expired. Re-authenticate via Settings."
+        if not self.is_authed():
+            raise FragAuthRequired(
+                "No active session. Sign in via Settings."
             )
-        return {"Authorization": f"Bearer {self.cfg.access_token}"}
+        return {"Authorization": f"Bearer {self.cfg.session_token}"}
+
+    def start_auth(self) -> dict:
+        """Ask the Frag backend to begin a login. Returns {handle, authorize_url, expires_in}."""
+        resp = self.session.post(
+            self._url("/auth/start"),
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            raise FragAPIError(self._format_error(resp))
+        return resp.json()
+
+    def poll_auth(self, handle: str) -> dict:
+        """Poll a login. Returns {status, session_token?, user_id?, expires_at?}."""
+        resp = self.session.get(
+            self._url("/auth/poll"),
+            params={"handle": handle},
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            raise FragAPIError(self._format_error(resp))
+        result = resp.json()
+        if result.get("status") == "approved":
+            self._store_session(result)
+        return result
+
+    def whoami(self) -> dict:
+        resp = self.session.get(
+            self._url("/auth/whoami"),
+            headers=self._authed(),
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            raise FragAPIError(self._format_error(resp))
+        return resp.json()
+
+    def logout(self) -> None:
+        """Tell the backend to revoke our session and clear local state."""
+        if self.is_authed():
+            try:
+                self.session.post(
+                    self._url("/auth/logout"),
+                    headers=self._authed(),
+                    timeout=DEFAULT_TIMEOUT,
+                )
+            except requests.RequestException:
+                pass
+        self._clear_session()
+
+    def _store_session(self, payload: dict) -> None:
+        self.cfg.session_token = payload.get("session_token", "")
+        self.cfg.session_user_id = payload.get("user_id", "")
+        expires_at = payload.get("expires_at")
+        if isinstance(expires_at, str) and expires_at:
+            try:
+                from datetime import datetime
+                self.cfg.session_expires_at = datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00")
+                ).timestamp()
+            except ValueError:
+                self.cfg.session_expires_at = time.time() + 30 * 24 * 3600
+        else:
+            self.cfg.session_expires_at = time.time() + 30 * 24 * 3600
+        self.cfg.save()
+
+    def _clear_session(self) -> None:
+        self.cfg.session_token = ""
+        self.cfg.session_user_id = ""
+        self.cfg.session_expires_at = 0.0
+        self.cfg.save()
 
     # ---- low-level ----------------------------------------------------------
 
@@ -135,9 +216,14 @@ class FragClient:
             raise FragAPIError(self._format_error(resp))
 
     def check_update(self, current_version: str) -> dict:
-        """Ask the PD API whether a newer version of Frag is available."""
+        """Ask PD whether a newer version of Frag is available.
+
+        This hits PD's public distribution API directly (no auth required) since
+        catalog reads are public.
+        """
+        pd_base = "https://pixelateddream.net"
         resp = self.session.get(
-            f"{self.cfg.server_url.rstrip('/')}/api/v1/software/frag/check-update",
+            f"{pd_base}/api/v1/software/frag/check-update",
             params={"v": current_version},
             timeout=DEFAULT_TIMEOUT,
         )
