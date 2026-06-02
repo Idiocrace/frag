@@ -56,18 +56,28 @@ public final class FragWorldInfo {
     /** Write the snapshot for {@code server} into its overworld save directory. */
     public static Path write(MinecraftServer server, Logger log) throws IOException {
         ServerLevel overworld = server.overworld();
-        // ROOT points at the save folder root (e.g. saves/<world>) on integrated and dedicated servers.
-        Path savePath = overworld.getServer().getWorldPath(LevelResource.ROOT).normalize();
-        Path dir = savePath.resolve(DIR_NAME);
-        Files.createDirectories(dir);
-        Path file = dir.resolve(FILE_NAME);
+        final LevelResource root2 = LevelResource.ROOT;
+        if (root2 != null) {
+        final LevelResource root3 = LevelResource.ROOT;
+        if (root3 != null) {
+            // ROOT points at the save folder root (e.g. saves/<world>) on integrated and dedicated servers.
+            Path savePath = overworld.getServer().getWorldPath(root3).normalize();
+            Path dir = savePath.resolve(DIR_NAME);
+            Files.createDirectories(dir);
+            Path file = dir.resolve(FILE_NAME);
 
-        Map<String, Object> payload = snapshot(server);
-        Files.writeString(file, GSON.toJson(payload));
-        if (log != null) {
-            log.info("Frag: wrote world info to {}", file);
+            Map<String, Object> payload = snapshot(server);
+            Files.writeString(file, GSON.toJson(payload));
+            if (log != null) {
+                log.info("Frag: wrote world info to {}", file);
+            }
+            return file;
+            } else {
+                throw new IOException("Failed to resolve world save path");
+            } 
+        } else {
+            throw new IOException("Failed to resolve world save path");
         }
-        return file;
     }
 
     // ---- payload sections ---------------------------------------------------
@@ -104,7 +114,8 @@ public final class FragWorldInfo {
 
         // GameRule snapshot — small, useful for diff-checking parity across devices.
         Map<String, Object> rules = new LinkedHashMap<>();
-        overworld.getGameRules().visitGameRuleTypes(new GameRules.GameRuleTypeVisitor() {
+        overworld.getGameRules();
+        GameRules.visitGameRuleTypes(new GameRules.GameRuleTypeVisitor() {
             @Override
             public <T extends GameRules.Value<T>> void visit(GameRules.Key<T> key, GameRules.Type<T> type) {
                 rules.put(key.getId(), overworld.getGameRules().getRule(key).toString());
