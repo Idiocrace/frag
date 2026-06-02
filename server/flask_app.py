@@ -36,6 +36,7 @@ import time
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
+import config
 
 import requests
 from flask import Flask, abort, g, jsonify, request, send_from_directory
@@ -57,6 +58,9 @@ SESSION_CACHE_PATH = Path(
     os.environ.get("FRAG_SESSION_CACHE", str(USER_DATA_ROOT / ".sessions.json"))
 )
 MAX_FILE_BYTES = int(os.environ.get("FRAG_MAX_FILE_BYTES", 2 * 1024 * 1024 * 1024))
+# Per-user storage quota.  Free tier is 10 GiB; everything written into the
+# user's directory (uploads + brokered downloads) counts against it.
+USER_QUOTA_BYTES = int(os.environ.get("FRAG_USER_QUOTA_BYTES", 10 * 1024 * 1024 * 1024))
 DOWNLOAD_TIMEOUT = 30
 DOWNLOAD_WALL_TIMEOUT = 300
 USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -73,7 +77,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_BYTES
 USER_DATA_ROOT.mkdir(parents=True, exist_ok=True)
 SESSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-pd = PDClient()
+pd = PDClient(config.MozmdNXZnRXAN9pG["_iMfGvUf0hly8ADB"])
 sessions = SessionCache(SESSION_CACHE_PATH)
 
 
@@ -88,11 +92,45 @@ def user_dir(user_id: str) -> Path:
     return USER_DATA_ROOT / user_id
 
 
+def user_usage_bytes(user_id: str) -> int:
+    """Total bytes the user currently holds in their directory."""
+    d = user_dir(user_id)
+    if not d.is_dir():
+        return 0
+    total = 0
+    for p in d.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def quota_remaining(user_id: str) -> int:
+    return max(USER_QUOTA_BYTES - user_usage_bytes(user_id), 0)
+
+
+def _quota_error(user_id: str, attempted: int) -> tuple:
+    """JSON 507 response body when a write would exceed the user's quota."""
+    used = user_usage_bytes(user_id)
+    return (
+        jsonify({
+            "error": "Storage quota exceeded",
+            "quota_bytes": USER_QUOTA_BYTES,
+            "used_bytes": used,
+            "remaining_bytes": max(USER_QUOTA_BYTES - used, 0),
+            "attempted_bytes": attempted,
+        }),
+        507,
+    )
+
+
 def _bearer_token() -> str:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return ""
-    return auth[len("Bearer "):].strip()
+    return auth[len("Bearer ") :].strip()
 
 
 def _validate_token(token: str) -> CachedSession | None:
@@ -131,6 +169,7 @@ def _validate_token(token: str) -> CachedSession | None:
 
 def _parse_iso_to_epoch(iso: str) -> float:
     from datetime import datetime
+
     if not iso:
         return time.time() + 24 * 3600  # defensive default
     try:
@@ -146,7 +185,9 @@ def login_required(f):
     def wrapper(*args, **kwargs):
         token = _bearer_token()
         if not token:
-            return jsonify({"error": "Missing Authorization: Bearer <session_token>"}), 401
+            return jsonify(
+                {"error": "Missing Authorization: Bearer <session_token>"}
+            ), 401
         session = _validate_token(token)
         if session is None:
             return jsonify({"error": "Invalid or expired session"}), 401
@@ -183,11 +224,13 @@ def auth_start():
     except PDClientError as exc:
         log.error("PD login start failed: %s", exc)
         return jsonify({"error": "Failed to start login", "detail": str(exc)}), 502
-    return jsonify({
-        "handle": result["handle"],
-        "authorize_url": result["authorize_url"],
-        "expires_in": result.get("expires_in", 600),
-    })
+    return jsonify(
+        {
+            "handle": result["handle"],
+            "authorize_url": result["authorize_url"],
+            "expires_in": result.get("expires_in", 600),
+        }
+    )
 
 
 @app.route("/frag/v1/auth/poll", methods=["GET"])
@@ -216,22 +259,26 @@ def auth_poll():
     )
     sessions.put(fresh)
 
-    return jsonify({
-        "status": "approved",
-        "session_token": result["session_token"],
-        "user_id": result["user_id"],
-        "expires_at": result.get("expires_at"),
-    })
+    return jsonify(
+        {
+            "status": "approved",
+            "session_token": result["session_token"],
+            "user_id": result["user_id"],
+            "expires_at": result.get("expires_at"),
+        }
+    )
 
 
 @app.route("/frag/v1/auth/whoami", methods=["GET"])
 @login_required
 def auth_whoami():
-    return jsonify({
-        "user_id": g.user.user_id,
-        "username": g.user.username,
-        "expires_at": g.user.expires_at,
-    })
+    return jsonify(
+        {
+            "user_id": g.user.user_id,
+            "username": g.user.username,
+            "expires_at": g.user.expires_at,
+        }
+    )
 
 
 @app.route("/frag/v1/auth/logout", methods=["POST"])
@@ -283,6 +330,17 @@ def upload_file():
     dest_dir = user_dir(user_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / filename
+
+    # If we're overwriting an existing file the old bytes will be freed, so
+    # don't count them against the user's current usage when checking quota.
+    existing = dest.stat().st_size if dest.is_file() else 0
+    remaining = max(USER_QUOTA_BYTES - user_usage_bytes(user_id) + existing, 0)
+
+    # Pre-check via Content-Length so we reject huge uploads before saving.
+    declared = request.content_length
+    if declared is not None and declared > remaining:
+        return _quota_error(user_id, declared)
+
     upload.save(str(dest))
 
     size = dest.stat().st_size
@@ -290,12 +348,21 @@ def upload_file():
         dest.unlink(missing_ok=True)
         return jsonify({"error": f"File exceeds {MAX_FILE_BYTES} bytes"}), 413
 
-    return jsonify({
-        "message": "Upload successful",
-        "user_id": user_id,
-        "filename": filename,
-        "size": size,
-    })
+    # Post-check in case the client lied about Content-Length.
+    if size > remaining:
+        dest.unlink(missing_ok=True)
+        return _quota_error(user_id, size)
+
+    return jsonify(
+        {
+            "message": "Upload successful",
+            "user_id": user_id,
+            "filename": filename,
+            "size": size,
+            "quota_bytes": USER_QUOTA_BYTES,
+            "used_bytes": user_usage_bytes(user_id),
+        }
+    )
 
 
 @app.route("/frag/v1/save-data", methods=["POST"])
@@ -315,14 +382,34 @@ def save_data():
     dest_dir = user_dir(user_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    # Shared budget across both downloads in this request — second URL must
+    # respect the first one's bytes.  Mutable holder so _download_zip can
+    # decrement it as bytes land.
+    budget = [quota_remaining(user_id)]
+
     try:
-        saved = [_download_zip(url, dest_dir) for url in links]
+        saved = [_download_zip(url, dest_dir, budget) for url in links]
+    except _QuotaExceeded as exc:
+        return _quota_error(user_id, exc.attempted)
     except requests.RequestException as exc:
         return jsonify({"error": f"Download failed: {exc}"}), 502
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
     return jsonify({"message": "Data saved", "user_id": user_id, "files": saved})
+
+
+@app.route("/frag/v1/quota", methods=["GET"])
+@login_required
+def quota_status():
+    user_id = g.user.user_id
+    used = user_usage_bytes(user_id)
+    return jsonify({
+        "user_id": user_id,
+        "quota_bytes": USER_QUOTA_BYTES,
+        "used_bytes": used,
+        "remaining_bytes": max(USER_QUOTA_BYTES - used, 0),
+    })
 
 
 @app.route("/frag/v1/files/<path:filename>", methods=["DELETE"])
@@ -349,7 +436,20 @@ def delete_file(filename: str):
 # ----------------------------------------------------------------------
 
 
-def _download_zip(url: str, dest_dir: Path) -> str:
+class _QuotaExceeded(Exception):
+    """Raised when a streamed download would push the user over quota."""
+
+    def __init__(self, attempted: int):
+        super().__init__(f"User storage quota would be exceeded ({attempted} bytes)")
+        self.attempted = attempted
+
+
+def _download_zip(url: str, dest_dir: Path, budget: list[int]) -> str:
+    """Stream *url* to *dest_dir*, charging the bytes against *budget*[0].
+
+    *budget* is a single-element mutable list so this function can decrement
+    the caller's remaining quota in place across successive downloads.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError(f"Invalid URL: {url}")
@@ -363,6 +463,16 @@ def _download_zip(url: str, dest_dir: Path) -> str:
 
     with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as resp:
         resp.raise_for_status()
+
+        # Up-front reject if the server advertised a Content-Length we
+        # already know exceeds the user's remaining quota.
+        try:
+            advertised = int(resp.headers.get("Content-Length", "") or 0)
+        except ValueError:
+            advertised = 0
+        if advertised and advertised > budget[0]:
+            raise _QuotaExceeded(advertised)
+
         total = 0
         with open(dest, "wb") as fh:
             for chunk in resp.iter_content(chunk_size=64 * 1024):
@@ -377,8 +487,13 @@ def _download_zip(url: str, dest_dir: Path) -> str:
                     fh.close()
                     dest.unlink(missing_ok=True)
                     raise ValueError(f"File exceeds {MAX_FILE_BYTES} bytes: {url}")
+                if total > budget[0]:
+                    fh.close()
+                    dest.unlink(missing_ok=True)
+                    raise _QuotaExceeded(total)
                 fh.write(chunk)
 
+    budget[0] -= total
     return filename
 
 
