@@ -162,6 +162,15 @@ class FragClient:
             raise FragAPIError(self._format_error(resp))
         return resp.json().get("files", [])
 
+    def quota(self) -> dict:
+        """Return ``{quota_bytes, used_bytes, remaining_bytes, user_id}``."""
+        resp = self.session.get(
+            self._url("/quota"), headers=self._authed(), timeout=DEFAULT_TIMEOUT
+        )
+        if resp.status_code != 200:
+            raise FragAPIError(self._format_error(resp))
+        return resp.json()
+
     def upload_zip(
         self,
         zip_path: Path,

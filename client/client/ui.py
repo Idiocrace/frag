@@ -180,6 +180,7 @@ SECTIONS = [
     ("mods", "Mods", "📦"),
     ("worlds", "Worlds", "🌍"),
     ("sync", "Sync", "☁"),
+    ("storage", "Storage", "💾"),
 ]
 
 
@@ -332,12 +333,14 @@ class FragApp(ctk.CTk):
         self.mods_view = ModsView(content, self)
         self.worlds_view = WorldsView(content, self)
         self.sync_view = SyncView(content, self)
+        self.storage_view = StorageView(content, self)
         self.settings_view = SettingsView(content, self)
 
         self._views = {
             "mods": self.mods_view,
             "worlds": self.worlds_view,
             "sync": self.sync_view,
+            "storage": self.storage_view,
             "settings": self.settings_view,
         }
 
@@ -368,6 +371,8 @@ class FragApp(ctk.CTk):
         # Auto-actions when switching tabs
         if key == "sync" and prev != "sync":
             self.after(50, self.sync_view.refresh_files)
+        if key == "storage" and prev != "storage":
+            self.after(50, self.storage_view.refresh_async)
 
     # ---- helpers ------------------------------------------------------------
 
@@ -1790,6 +1795,251 @@ class SyncView(View):
 
     def _show_error(self, e: Exception) -> None:
         messagebox.showerror("Frag", str(e))
+
+
+# ---- storage view -----------------------------------------------------------
+
+
+# TODO(quota-view): replace with the real Patreon URL before shipping.
+PATREON_URL = "https://www.patreon.com/PLACEHOLDER_FRAG"
+
+# TODO(quota-view): finalize the tier ladder + monthly prices with the team.
+# These are placeholders — numbers are illustrative, copy is rough.
+STORAGE_TIERS = (
+    {
+        "name": "Free",
+        "tagline": "What you have now.",
+        "storage_bytes": 10 * 1024 * 1024 * 1024,
+        "price": "Free",
+        "highlight": False,
+    },
+    {
+        "name": "Supporter",
+        "tagline": "Five times the room for worlds + modpacks.",
+        "storage_bytes": 50 * 1024 * 1024 * 1024,
+        "price": "$TBD / month",  # TODO(quota-view): set real price
+        "highlight": True,
+    },
+    {
+        "name": "Patron",
+        "tagline": "For hoarders, server admins, and content creators.",
+        "storage_bytes": 250 * 1024 * 1024 * 1024,
+        "price": "$TBD / month",  # TODO(quota-view): set real price
+        "highlight": False,
+    },
+)
+
+
+def _fmt_bytes(n: int) -> str:
+    """Human-readable size, max 1 decimal."""
+    if n < 1024:
+        return f"{n} B"
+    units = ("KB", "MB", "GB", "TB")
+    size = float(n)
+    for unit in units:
+        size /= 1024
+        if size < 1024:
+            # Drop the decimal when it's not adding info.
+            return f"{size:.1f} {unit}".replace(".0 ", " ")
+    return f"{size:.1f} PB"
+
+
+class StorageView(View):
+    """Per-user storage usage + Patreon upsell."""
+
+    def __init__(self, parent, app: "FragApp"):
+        super().__init__(parent, app, "Storage", "Your cloud quota")
+        self._quota_bytes = 0
+        self._used_bytes = 0
+        self._build()
+
+    def _build(self) -> None:
+        # ---- usage card -----------------------------------------------------
+        usage_card = card(self)
+        usage_card.pack(fill="x", pady=(8, 12))
+
+        pad = tk.Frame(usage_card, bg=SURFACE)
+        pad.pack(fill="x", padx=22, pady=18)
+
+        self._usage_title = tk.Label(
+            pad, text="Loading usage…", bg=SURFACE, fg=TEXT,
+            font=FONT_H1, anchor="w",
+        )
+        self._usage_title.pack(fill="x")
+
+        self._usage_subtitle = tk.Label(
+            pad, text="", bg=SURFACE, fg=TEXT_DIM,
+            font=FONT_DIM, anchor="w",
+        )
+        self._usage_subtitle.pack(fill="x", pady=(2, 14))
+
+        # Progress bar — hand-drawn on a canvas so we can hit specific
+        # colors (CTk progress bars don't theme as well).
+        self._bar_canvas = tk.Canvas(
+            pad, height=14, bg=SURFACE_HI, highlightthickness=0, bd=0,
+        )
+        self._bar_canvas.pack(fill="x")
+        self._bar_fill = self._bar_canvas.create_rectangle(
+            0, 0, 0, 14, fill=PRIMARY, width=0,
+        )
+        self._bar_canvas.bind("<Configure>", lambda _e: self._redraw_bar())
+
+        chip_row = tk.Frame(pad, bg=SURFACE)
+        chip_row.pack(fill="x", pady=(10, 0))
+        self._used_chip = tk.Label(
+            chip_row, text="", bg=SURFACE, fg=TEXT_DIM, font=FONT_DIM, anchor="w",
+        )
+        self._used_chip.pack(side="left")
+        ghost_button(
+            chip_row, text="Refresh", width=110, command=self.refresh_async,
+        ).pack(side="right")
+
+        # ---- upsell header --------------------------------------------------
+        upsell_header = tk.Frame(self, bg=BG)
+        upsell_header.pack(fill="x", pady=(8, 6))
+        tk.Label(
+            upsell_header, text="Need more room?", bg=BG, fg=TEXT,
+            font=FONT_H2, anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            upsell_header,
+            # TODO(quota-view): rewrite the upsell copy with marketing.
+            text=(
+                "Frag is built and hosted by one person. "
+                "Patreon supporters get extra cloud storage and keep the servers running."
+            ),
+            bg=BG, fg=TEXT_DIM, font=FONT_DIM, anchor="w", justify="left",
+            wraplength=900,
+        ).pack(anchor="w", pady=(2, 0))
+
+        # ---- tier cards row -------------------------------------------------
+        tiers_row = tk.Frame(self, bg=BG)
+        tiers_row.pack(fill="x", pady=(8, 12))
+        for i, tier in enumerate(STORAGE_TIERS):
+            self._build_tier_card(tiers_row, tier).pack(
+                side="left", fill="both", expand=True,
+                padx=(0 if i == 0 else 10, 0),
+            )
+
+        # ---- big CTA --------------------------------------------------------
+        cta_row = tk.Frame(self, bg=BG)
+        cta_row.pack(fill="x", pady=(4, 0))
+        primary_button(
+            cta_row, text="Support Frag on Patreon  ↗",
+            height=44, font=FONT_H2,
+            command=lambda: webbrowser.open(PATREON_URL),
+        ).pack(side="left")
+        tk.Label(
+            cta_row,
+            # TODO(quota-view): swap this for the actual link / handle once decided.
+            text="  patreon.com/PLACEHOLDER_FRAG",
+            bg=BG, fg=TEXT_FAINT, font=FONT_DIM,
+        ).pack(side="left", padx=(12, 0))
+
+    def _build_tier_card(self, parent, tier: dict) -> tk.Frame:
+        outline = PRIMARY if tier["highlight"] else SURFACE_HI
+        wrap = tk.Frame(parent, bg=outline)
+        inner = tk.Frame(wrap, bg=SURFACE)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+
+        pad = tk.Frame(inner, bg=SURFACE)
+        pad.pack(fill="both", expand=True, padx=18, pady=16)
+
+        # Header row: name + optional "best value" pill.
+        header = tk.Frame(pad, bg=SURFACE)
+        header.pack(fill="x")
+        tk.Label(
+            header, text=tier["name"], bg=SURFACE, fg=TEXT,
+            font=FONT_H2, anchor="w",
+        ).pack(side="left")
+        if tier["highlight"]:
+            _pill(header, "most popular", PRIMARY, PRIMARY_SOFT).pack(
+                side="right",
+            )
+
+        # Storage size (big).
+        tk.Label(
+            pad, text=_fmt_bytes(tier["storage_bytes"]),
+            bg=SURFACE, fg=TEXT, font=FONT_DISPLAY, anchor="w",
+        ).pack(fill="x", pady=(8, 0))
+
+        # Price.
+        tk.Label(
+            pad, text=tier["price"], bg=SURFACE,
+            fg=PRIMARY if tier["highlight"] else TEXT_DIM,
+            font=FONT_BODY, anchor="w",
+        ).pack(fill="x")
+
+        # Tagline.
+        tk.Label(
+            pad, text=tier["tagline"], bg=SURFACE, fg=TEXT_DIM,
+            font=FONT_DIM, anchor="w", justify="left", wraplength=240,
+        ).pack(fill="x", pady=(10, 0))
+
+        return wrap
+
+    # ---- data -------------------------------------------------------------
+
+    def refresh_async(self) -> None:
+        self._usage_title.configure(text="Loading usage…")
+        self._usage_subtitle.configure(text="")
+        self._used_chip.configure(text="")
+
+        def work():
+            return self.app.client.quota()
+
+        def done(payload: dict):
+            self._quota_bytes = int(payload.get("quota_bytes", 0))
+            self._used_bytes = int(payload.get("used_bytes", 0))
+            self._render_usage()
+
+        def fail(_exc: Exception):
+            self._usage_title.configure(text="Couldn't reach server")
+            self._usage_subtitle.configure(
+                text="Check your connection, then refresh.",
+            )
+
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status="Loading quota…",
+        )
+
+    def _render_usage(self) -> None:
+        quota = max(self._quota_bytes, 1)
+        used = max(self._used_bytes, 0)
+        pct = min(used / quota, 1.0)
+
+        self._usage_title.configure(
+            text=f"{_fmt_bytes(used)} of {_fmt_bytes(quota)} used",
+        )
+        if pct >= 0.9:
+            warn_color = ERROR
+            msg = "You're almost out of room — consider supporting Frag for more storage."
+        elif pct >= 0.75:
+            warn_color = WARNING
+            msg = "Heads up: you're past 75% of your free quota."
+        else:
+            warn_color = TEXT_DIM
+            msg = f"{_fmt_bytes(max(quota - used, 0))} free."
+        self._usage_subtitle.configure(text=msg, fg=warn_color)
+        self._used_chip.configure(text=f"{pct * 100:.1f}% used")
+
+        # Color the bar based on fill level.
+        self._bar_fill_color = (
+            ERROR if pct >= 0.9 else WARNING if pct >= 0.75 else PRIMARY
+        )
+        self._redraw_bar()
+
+    def _redraw_bar(self) -> None:
+        if not hasattr(self, "_bar_canvas"):
+            return
+        quota = max(self._quota_bytes, 1)
+        used = max(self._used_bytes, 0)
+        pct = min(used / quota, 1.0)
+        width = self._bar_canvas.winfo_width()
+        self._bar_canvas.coords(self._bar_fill, 0, 0, int(width * pct), 14)
+        self._bar_canvas.itemconfigure(
+            self._bar_fill, fill=getattr(self, "_bar_fill_color", PRIMARY),
+        )
 
 
 # ---- settings view ----------------------------------------------------------
