@@ -1,0 +1,16 @@
+{
+    // Responsible for PD picking up all released versions and their links
+    "latest": {
+        "version": "0.2.0",
+        "repository": "https://github.com/Idiocrace/frag",
+        "win64-bin": "https://github.com/Idiocrace/frag/releases/download/v0.2.0/Frag-0.2.0-win64.zip",
+        "description": "Added version control metadata to repository and added a 64 bit Windows .exe installer to releases."
+    },
+    "previous": [
+        {
+            "version": "0.1.0",
+            "repository": "https://github.com/Idiocrace/frag",
+            "description": "Initial release of Frag. Added basic mod management features and Pixelated Dream account integration."
+        }
+    ]
+}

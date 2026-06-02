@@ -1967,11 +1967,9 @@ def _ensure_configured(app: "FragApp") -> bool:
 
 def run() -> None:
     if os.environ.get("FRAG_FROM_LAUNCHER") != "1":
-        import tkinter.messagebox as _mb
-
         _root = tk.Tk()
         _root.withdraw()
-        _mb.showerror(
+        messagebox.showerror(
             "Frag",
             "Please launch Frag using the launcher (launcher.py or Frag.exe).\n"
             "Running the app directly is not supported.",

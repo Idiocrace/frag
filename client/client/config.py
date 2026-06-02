@@ -36,7 +36,7 @@ class Config:
     """Frag client configuration, split into device-local and cloud-synced sections."""
 
     # ---- device-local (not synced) -----------------------------------------
-    server_url: str = "http://localhost:4543"
+    server_url: str = "https://pixelateddream.net"
     pd_oauth_url: str = "https://pixelateddream.net"
     access_token: str = ""  # OAuth access token (RS256 JWT)
     access_token_expires_at: float = 0.0
