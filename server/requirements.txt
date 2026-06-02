@@ -1,8 +1,4 @@
 Flask==3.0.3
-PyJWT==2.9.0
 gunicorn==23.0.0
 requests==2.32.3
-cryptography==45.0.4
-passlib==1.7.4
-argon2_cffi==23.1.0
 waitress
