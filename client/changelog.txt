@@ -1,0 +1,111 @@
+Frag 0.2.0 — what's new
+=======================
+
+Sign-in
+-------
+- Sign-in now goes through PD itself. Click "Sign in with PD" in
+  Settings, approve in your browser, and you're back. No tokens to copy
+  or paste, no manual setup.
+- Sessions stick around — the app remembers you and shows how long until
+  your session expires.
+
+Mods
+----
+- Big mods folder? It actually works now. Scanning your folder is roughly
+  5x faster — a folder of ~80 mods that used to take 6–10 seconds now
+  finishes in 1–2.
+- Real mod icons. Frag pulls each mod's icon straight out of its jar
+  (icon.png / logo.png / pack.png / declared logoFile). Mods that don't
+  ship an icon get a stable colored letter avatar instead of the old
+  generic placeholder.
+- The mod list scrolls properly. Earlier builds could get stuck showing
+  only the first mod — fixed.
+- New loading spinner while scanning so it's obvious the app is working,
+  not frozen.
+
+Worlds
+------
+- Worlds now show their actual in-game screenshot as the icon (the same
+  one Minecraft shows on the world-select screen). Falls back to a
+  colored letter when the world hasn't been opened yet.
+- World inspection runs in parallel — first paint is much quicker for
+  saves folders with lots of worlds.
+- Same scroll + spinner fixes as the Mods tab.
+
+Storage
+-------
+- New Storage tab in the sidebar shows how much of your cloud quota
+  you've used, with a colored bar (purple when healthy, amber past 75%,
+  red past 90%).
+- Patreon supporters get extra storage — there's a link in the Storage
+  tab if you want to help keep the server running.
+
+App startup
+-----------
+- The splash screen and the main app are now one program. Previously the
+  splash could finish and the main window would silently fail to appear;
+  that whole class of bug is gone.
+- Startup errors actually show up in a dialog instead of vanishing.
+
+Installer
+---------
+- Single Frag.exe in dist\Frag\ — no more two-exe launcher + main-app
+  split. Easier to install, easier to ship.
+
+
+Technical notes
+===============
+
+Auth
+- Migrated from PD OAuth 2.0 (Authorization Code + PKCE) to a simpler
+  broker model where the frag server handles PD auth on the client's
+  behalf. Dropped oauth_auth.py and the PyJWT / cryptography deps.
+- Client now talks to /frag/v1/* on the frag backend instead of
+  /api/v1/frag on pdsite.
+- Config replaces access_token / id_token / refresh_token with a single
+  session_token + session_user_id + session_expires_at.
+
+Scanner
+- Parallel SHA1 hashing + jar parsing in a 16-thread pool.
+- Modrinth project metadata fetched in a 12-thread pool, deduped by
+  project_id so each project is queried at most once per scan.
+- parse_mod_jar() now also extracts mod icons; ModInfo gained an
+  icon_bytes field.
+
+UI
+- Mod and World lists rewritten on top of a hand-rolled tk.Canvas +
+  inner tk.Frame with a CTkScrollbar. The previous CTkScrollableFrame
+  had buggy scrollregion updates after a bulk destroy+repack, which is
+  why earlier builds often showed only the first row.
+- Row contents now use plain tk.Frame / tk.Label instead of
+  CTkFrame / CTkLabel. CTk widgets redraw rounded corners on every
+  measure pass; switching cuts per-row layout cost roughly 10x.
+- Fixed primary_button / ghost_button / danger_button factories — they
+  used to crash mid-loop if a caller passed height=, because the
+  factories already passed height positionally to CTkButton. The Mods
+  view hit this on the first row's Modrinth link button, which is what
+  made only one mod render.
+- WorldsView._inspect_all runs in an 8-thread pool (read_world +
+  recursive size walk per world).
+- Real loading spinner: 12-arm rotating greyscale arcs on a tk.Canvas,
+  cancelled when the list refreshes.
+- Icon cache (keyed by sha1 for mods, world.name for worlds) holds
+  PhotoImage refs so Tk doesn't GC them and so the same PNG is decoded
+  once per session.
+
+Storage view
+- New StorageView reads GET /frag/v1/quota on tab activation, draws a
+  hand-rendered usage bar, and surfaces a three-tier Patreon upsell.
+- FragClient gained a quota() method.
+
+Launcher
+- launcher.py absorbed frag.py. The splash and FragApp run in the same
+  Python process; the old DETACHED_PROCESS subprocess that swallowed
+  startup tracebacks is gone.
+- build.bat collapsed two PyInstaller passes into one onedir build of
+  launcher.py -> dist\Frag\Frag.exe.
+
+Misc
+- requirements.txt: dropped customtkinter pin churn; PyJWT and
+  cryptography removed alongside the OAuth rip-out.
+- config.py default server_url normalized to a trailing slash.
