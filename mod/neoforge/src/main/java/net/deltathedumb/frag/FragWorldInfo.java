@@ -86,7 +86,7 @@ public final class FragWorldInfo {
         Map<String, Object> mc = new LinkedHashMap<>();
         mc.put("version", SharedConstants.getCurrentVersion().getName());
         mc.put("data_version", SharedConstants.getCurrentVersion().getDataVersion().getVersion());
-        mc.put("release_target", SharedConstants.getCurrentVersion().getReleaseTarget());
+        mc.put("release_target", SharedConstants.getCurrentVersion().getId());
         mc.put("series", SharedConstants.getCurrentVersion().getDataVersion().getSeries());
         return mc;
     }
