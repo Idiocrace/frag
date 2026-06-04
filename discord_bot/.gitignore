@@ -1,0 +1,7 @@
+/.venv
+/__pycache__/
+# Bot state (Discord user -> issued token map).  Leaking this leaks tokens.
+/data/
+discord_user_tokens.json
+# Local env file containing FRAG_BOT_DISCORD_TOKEN etc.
+.env

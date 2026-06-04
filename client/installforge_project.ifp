@@ -4,7 +4,7 @@
   <Metadata productVersion="1.6.1" projectFileVersion="2.0"/>
   <ProductInformation>
     <Name>Frag</Name>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <CompanyName>Pixelated Dream</CompanyName>
     <WebURI>https://pixelateddream.net/software/frag</WebURI>
   </ProductInformation>
@@ -71,7 +71,7 @@
     <Program executableFilePath="" isLaunchEnabled="false" isTerminationEnabled="false"/>
   </VisualUpdateConfiguration>
   <BuildConfiguration>
-    <SetupFilePath>C:\stuffs\pdsitestuffs\frag\client\FragSetup-v0.2.0.exe</SetupFilePath>
+    <SetupFilePath>C:\stuffs\pdsitestuffs\frag\client\FragSetup-v0.3.0.exe</SetupFilePath>
     <SetupIconPath>..\icons\ancient.ico</SetupIconPath>
     <UninstallerIconPath>..\icons\ancient.ico</UninstallerIconPath>
     <Compression method="0" level="2"/>

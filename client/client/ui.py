@@ -640,11 +640,18 @@ class ModsView(View):
         self._set_loading()
 
         def work():
-            return scan_mods(self.app.cfg.mods_path)
+            # Scan + decode all PIL icon images off the main thread.  The
+            # only thing left for the UI thread is the cheap ImageTk wrap
+            # (which has to happen on the main thread because Tk image
+            # objects are root-bound) and packing the row widgets.
+            mods, warnings = scan_mods(self.app.cfg.mods_path)
+            decoded = self._decode_all_mod_icons(mods)
+            return mods, warnings, decoded
 
         def done(result):
-            mods, warnings = result
+            mods, warnings, decoded = result
             self.mods = mods
+            self._pending_icon_images = decoded
             self.warning_label.configure(
                 text=("  " + "  ".join(warnings)) if warnings else ""
             )
@@ -795,10 +802,32 @@ class ModsView(View):
                 pass
             self._spinner_after_id = None
 
-        for mod in filtered:
+        # Bump the generation counter so any in-flight chunked render
+        # from a prior _apply_filter() call aborts mid-loop instead of
+        # appending stale rows after we've started fresh.
+        self._render_gen = getattr(self, "_render_gen", 0) + 1
+        self._render_rows_chunked(filtered, self._render_gen)
+
+    def _render_rows_chunked(
+        self, filtered: list[ModInfo], gen: int, start: int = 0,
+        chunk: int = 12,
+    ) -> None:
+        """Pack rows in small batches, yielding to the event loop between.
+
+        Without chunking, rendering ~80 rows synchronously blocks the UI
+        for a few hundred ms — long enough to see the window stall.
+        Yielding every *chunk* rows lets the spinner / scrollbar / mouse
+        stay responsive while the list fills in.
+        """
+        if gen != getattr(self, "_render_gen", gen):
+            return  # superseded by a newer _apply_filter
+        end = min(start + chunk, len(filtered))
+        for mod in filtered[start:end]:
             self._render_row(mod)
-        # Force the scroll canvas to recompute its scrollregion so all rows
-        # are reachable on the first paint, not after a window resize.
+        if end < len(filtered):
+            self.after(1, self._render_rows_chunked, filtered, gen, end, chunk)
+            return
+        # Final batch done — refresh scrollregion.
         self.list_frame.update_idletasks()
         self._list_canvas.configure(scrollregion=self._list_canvas.bbox("all"))
 
@@ -856,41 +885,93 @@ class ModsView(View):
                 command=lambda url=mod.modrinth_page_url: webbrowser.open(url),
             ).pack(side="right", padx=(0, 6), pady=18)
 
-    def _icon_for(self, mod: ModInfo) -> tk.PhotoImage:
-        """Return a 44x44 PhotoImage for *mod*, decoded + cached on first use."""
-        cached = self._icon_cache.get(mod.sha1)
-        if cached is not None:
-            return cached
+    # Per-mod icon pipeline.
+    #
+    # The heavy work (PIL open / resize / rounded mask) runs on a worker
+    # thread via _decode_all_mod_icons() and is stored in _image_cache as
+    # raw PIL Images.  Only the cheap ImageTk.PhotoImage wrap happens on
+    # the main thread inside _icon_for(), because Tk image objects are
+    # bound to the Tk root and can only be created from the UI thread.
 
-        from PIL import Image, ImageDraw, ImageFont, ImageTk
+    _ICON_SIZE = 44
+    _ICON_RADIUS = 10
+
+    def _decode_all_mod_icons(self, mods: list[ModInfo]) -> dict[str, "object"]:
+        """Pre-decode + round all mod icons in a thread pool.
+
+        Returns ``{sha1: PIL.Image}``.  Skips entries already in
+        ``_image_cache`` so repeat refreshes are nearly free.  Safe to
+        call from any thread.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        cache = getattr(self, "_image_cache", None)
+        if cache is None:
+            cache = self._image_cache = {}
+        todo = [m for m in mods if m.sha1 not in cache]
+        if not todo:
+            return cache
+
+        # PIL releases the GIL during decode/resize, so threads help.
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            results = list(ex.map(self._decode_icon_image_for_mod, todo))
+        for mod, img in zip(todo, results):
+            cache[mod.sha1] = img
+        return cache
+
+    def _decode_icon_image_for_mod(self, mod: ModInfo):
+        """Pure-PIL: produce a 44x44 rounded RGBA Image for *mod*.
+
+        Must NOT touch Tk — runs on worker threads.
+        """
+        from PIL import Image, ImageDraw
         import io
 
-        size = 44
-        radius = 10
-        img: "Image.Image"
+        size = self._ICON_SIZE
         if mod.icon_bytes:
             try:
                 src = Image.open(io.BytesIO(mod.icon_bytes)).convert("RGBA")
                 src.thumbnail((size * 2, size * 2), Image.LANCZOS)
-                # Center-crop to square, then resize to target.
                 w, h = src.size
                 side = min(w, h)
                 left = (w - side) // 2
                 top = (h - side) // 2
                 src = src.crop((left, top, left + side, top + side))
-                img = src.resize((size, size), Image.LANCZOS)
+                base = src.resize((size, size), Image.LANCZOS)
             except Exception:
-                img = self._fallback_avatar(mod, size)
+                base = self._fallback_avatar(mod, size)
         else:
-            img = self._fallback_avatar(mod, size)
+            base = self._fallback_avatar(mod, size)
 
-        # Rounded-corner mask.
         mask = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, size, size), radius=radius, fill=255)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, size, size), radius=self._ICON_RADIUS, fill=255,
+        )
         rounded = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        rounded.paste(img, (0, 0), mask)
+        rounded.paste(base, (0, 0), mask)
+        return rounded
 
-        photo = ImageTk.PhotoImage(rounded)
+    def _icon_for(self, mod: ModInfo) -> tk.PhotoImage:
+        """Return a Tk PhotoImage for *mod*, using the pre-decoded Image cache.
+
+        Must run on the main thread (creates a Tk image).  Cheap: just a
+        ImageTk.PhotoImage wrap of a PIL Image that the worker already
+        decoded.  Falls back to synchronous decode if the cache miss is
+        from a code path that didn't go through _decode_all_mod_icons.
+        """
+        cached = self._icon_cache.get(mod.sha1)
+        if cached is not None:
+            return cached
+
+        from PIL import ImageTk
+        image_cache = getattr(self, "_image_cache", None) or {}
+        pil_image = image_cache.get(mod.sha1)
+        if pil_image is None:
+            # Worker hasn't decoded this one yet (e.g. row added via search
+            # before a re-scan finished).  Do it inline; rare path.
+            pil_image = self._decode_icon_image_for_mod(mod)
+            image_cache[mod.sha1] = pil_image
+
+        photo = ImageTk.PhotoImage(pil_image)
         self._icon_cache[mod.sha1] = photo
         return photo
 
@@ -1063,34 +1144,98 @@ class WorldsView(View):
             except tk.TclError:
                 pass
             self._spinner_after_id = None
+        self._set_loading()
 
-        saves = self.app.cfg.saves_path
-        worlds: list[Path] = []
-        if saves.is_dir():
-            worlds = sorted(p for p in saves.iterdir() if p.is_dir())
-        self.worlds = worlds
-        self.count_chip.configure(text=f"{len(worlds)} found")
+        def work():
+            saves = self.app.cfg.saves_path
+            worlds: list[Path] = []
+            if saves.is_dir():
+                worlds = sorted(p for p in saves.iterdir() if p.is_dir())
+            # Decode every world icon off the main thread.  Per-world PIL
+            # work dominates render time, so this is what made the UI hitch.
+            self._decode_all_world_icons(worlds)
+            return worlds
 
-        if not worlds:
-            _empty_state(
-                self.list_frame,
-                title="No worlds",
-                hint="Worlds appear here once you've played at least once.",
+        def done(worlds: list[Path]) -> None:
+            self.worlds = worlds
+            self.count_chip.configure(text=f"{len(worlds)} found")
+            # Clear the spinner before we start packing real rows.
+            for child in self.list_frame.winfo_children():
+                child.destroy()
+            if getattr(self, "_spinner_after_id", None):
+                try:
+                    self.after_cancel(self._spinner_after_id)
+                except tk.TclError:
+                    pass
+                self._spinner_after_id = None
+
+            if not worlds:
+                _empty_state(
+                    self.list_frame,
+                    title="No worlds",
+                    hint="Worlds appear here once you've played at least once.",
+                )
+                return
+
+            self._render_gen = getattr(self, "_render_gen", 0) + 1
+            self._render_worlds_chunked(worlds, self._render_gen)
+
+            self.app.sync_view.refresh_selection_chip()
+            self.app.run_in_thread(
+                self._inspect_all,
+                worlds,
+                on_done=lambda _r: None,
+                status="Inspecting worlds…",
             )
-            return
 
-        for world in worlds:
+        self.app.run_in_thread(work, on_done=done, status="Scanning worlds…")
+
+    def _render_worlds_chunked(
+        self, worlds: list[Path], gen: int, start: int = 0, chunk: int = 12,
+    ) -> None:
+        if gen != getattr(self, "_render_gen", gen):
+            return
+        end = min(start + chunk, len(worlds))
+        for world in worlds[start:end]:
             self._render_row(world)
+        if end < len(worlds):
+            self.after(1, self._render_worlds_chunked, worlds, gen, end, chunk)
+            return
         self.list_frame.update_idletasks()
         self._list_canvas.configure(scrollregion=self._list_canvas.bbox("all"))
 
-        self.app.sync_view.refresh_selection_chip()
-        self.app.run_in_thread(
-            self._inspect_all,
-            worlds,
-            on_done=lambda _r: None,
-            status="Inspecting worlds…",
+    def _set_loading(self) -> None:
+        # Same spinner as ModsView — see that view for the full shape.
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+        wrap = tk.Frame(self.list_frame, bg=SURFACE)
+        wrap.pack(pady=48)
+        spinner = tk.Canvas(
+            wrap, width=42, height=42, bg=SURFACE, highlightthickness=0, bd=0,
         )
+        spinner.pack()
+        arms = []
+        import math
+        for i in range(12):
+            angle = math.radians(i * 30 - 90)
+            x0 = 21 + math.cos(angle) * 11
+            y0 = 21 + math.sin(angle) * 11
+            x1 = 21 + math.cos(angle) * 18
+            y1 = 21 + math.sin(angle) * 18
+            arms.append(spinner.create_line(x0, y0, x1, y1, width=3, capstyle="round"))
+        tk.Label(
+            wrap, text="Scanning worlds…", bg=SURFACE, fg=TEXT_DIM, font=FONT_BODY,
+        ).pack(pady=(12, 0))
+        ramp = ("#F4F4F8", "#D6D6E0", "#B8B8C8", "#9A9AB0", "#7C7C98",
+                "#5E5E80", "#404068", "#383858", "#303048", "#28283A",
+                "#20202E", "#18181E")
+        step = {"i": 0}
+        def tick():
+            for k, arm in enumerate(arms):
+                spinner.itemconfigure(arm, fill=ramp[(k + step["i"]) % 12])
+            step["i"] = (step["i"] + 1) % 12
+            self._spinner_after_id = self.after(80, tick)
+        tick()
 
     def _render_row(self, world: Path) -> None:
         row = tk.Frame(self.list_frame, bg=SURFACE, height=64)
@@ -1139,18 +1284,33 @@ class WorldsView(View):
             "var": var,
         }
 
-    def _icon_for(self, world: Path) -> tk.PhotoImage:
-        """Return a 44x44 rounded PhotoImage of <world>/icon.png, or a globe fallback."""
-        cached = self._icon_cache.get(world.name)
-        if cached is not None:
-            return cached
+    # World-icon pipeline: same split as ModsView._icon_for.  PIL work
+    # happens off-thread via _decode_all_world_icons(); _icon_for() only
+    # does the cheap ImageTk wrap on the main thread.
 
-        from PIL import Image, ImageDraw, ImageFont, ImageTk
-        size = 44
-        radius = 10
+    _ICON_SIZE = 44
+    _ICON_RADIUS = 10
 
+    def _decode_all_world_icons(self, worlds: list[Path]) -> dict[str, object]:
+        from concurrent.futures import ThreadPoolExecutor
+        cache = getattr(self, "_image_cache", None)
+        if cache is None:
+            cache = self._image_cache = {}
+        todo = [w for w in worlds if w.name not in cache]
+        if not todo:
+            return cache
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            results = list(ex.map(self._decode_icon_image_for_world, todo))
+        for world, img in zip(todo, results):
+            cache[world.name] = img
+        return cache
+
+    def _decode_icon_image_for_world(self, world: Path):
+        """Pure-PIL: produce a 44x44 rounded RGBA Image for *world*."""
+        from PIL import Image, ImageDraw, ImageFont
+        size = self._ICON_SIZE
         png_path = world / "icon.png"
-        img: "Image.Image" | None = None
+        img = None
         if png_path.is_file():
             try:
                 src = Image.open(png_path).convert("RGBA")
@@ -1164,7 +1324,6 @@ class WorldsView(View):
             except Exception:
                 img = None
         if img is None:
-            # Accent-colored globe fallback.
             img = Image.new("RGBA", (size, size), "#EC4899")
             draw = ImageDraw.Draw(img)
             try:
@@ -1181,13 +1340,28 @@ class WorldsView(View):
                 ((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]),
                 letter, fill="#FFFFFF", font=font,
             )
-
         mask = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, size, size), radius=radius, fill=255)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, size, size), radius=self._ICON_RADIUS, fill=255,
+        )
         rounded = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         rounded.paste(img, (0, 0), mask)
+        return rounded
 
-        photo = ImageTk.PhotoImage(rounded)
+    def _icon_for(self, world: Path) -> tk.PhotoImage:
+        """Tk-wrap the pre-decoded PIL Image.  Main thread only."""
+        cached = self._icon_cache.get(world.name)
+        if cached is not None:
+            return cached
+
+        from PIL import ImageTk
+        image_cache = getattr(self, "_image_cache", None) or {}
+        pil_image = image_cache.get(world.name)
+        if pil_image is None:
+            pil_image = self._decode_icon_image_for_world(world)
+            image_cache[world.name] = pil_image
+
+        photo = ImageTk.PhotoImage(pil_image)
         self._icon_cache[world.name] = photo
         return photo
 
@@ -1800,34 +1974,7 @@ class SyncView(View):
 # ---- storage view -----------------------------------------------------------
 
 
-# TODO(quota-view): replace with the real Patreon URL before shipping.
-PATREON_URL = "https://www.patreon.com/PLACEHOLDER_FRAG"
-
-# TODO(quota-view): finalize the tier ladder + monthly prices with the team.
-# These are placeholders — numbers are illustrative, copy is rough.
-STORAGE_TIERS = (
-    {
-        "name": "Free",
-        "tagline": "What you have now.",
-        "storage_bytes": 10 * 1024 * 1024 * 1024,
-        "price": "Free",
-        "highlight": False,
-    },
-    {
-        "name": "Supporter",
-        "tagline": "Five times the room for worlds + modpacks.",
-        "storage_bytes": 50 * 1024 * 1024 * 1024,
-        "price": "$TBD / month",  # TODO(quota-view): set real price
-        "highlight": True,
-    },
-    {
-        "name": "Patron",
-        "tagline": "For hoarders, server admins, and content creators.",
-        "storage_bytes": 250 * 1024 * 1024 * 1024,
-        "price": "$TBD / month",  # TODO(quota-view): set real price
-        "highlight": False,
-    },
-)
+PATREON_URL = "https://www.patreon.com/c/mabelthemoron/membership"
 
 
 def _fmt_bytes(n: int) -> str:
@@ -1845,12 +1992,15 @@ def _fmt_bytes(n: int) -> str:
 
 
 class StorageView(View):
-    """Per-user storage usage + Patreon upsell."""
+    """Per-user storage usage + Premium token redemption."""
 
     def __init__(self, parent, app: "FragApp"):
         super().__init__(parent, app, "Storage", "Your cloud quota")
         self._quota_bytes = 0
         self._used_bytes = 0
+        self._base_quota_bytes = 0
+        self._bonus_bytes = 0
+        self._tokens_held = 0
         self._build()
 
     def _build(self) -> None:
@@ -1894,89 +2044,73 @@ class StorageView(View):
             chip_row, text="Refresh", width=110, command=self.refresh_async,
         ).pack(side="right")
 
-        # ---- upsell header --------------------------------------------------
-        upsell_header = tk.Frame(self, bg=BG)
-        upsell_header.pack(fill="x", pady=(8, 6))
+        # ---- current-plan chip ---------------------------------------------
+        self._plan_chip_row = tk.Frame(self, bg=BG)
+        self._plan_chip_row.pack(fill="x", pady=(4, 0))
+        self._plan_chip = tk.Label(
+            self._plan_chip_row, text="", bg=SURFACE, fg=TEXT_DIM,
+            font=FONT_DIM, padx=12, pady=6,
+        )
+        self._plan_chip.pack(side="left")
+
+        # ---- premium token redemption -------------------------------------
+        redeem_card = card(self)
+        redeem_card.pack(fill="x", pady=(16, 0))
+        rpad = tk.Frame(redeem_card, bg=SURFACE)
+        rpad.pack(fill="x", padx=22, pady=18)
+
+        # Label row: "Premium Token"  ........................  Get a Token
+        label_row = tk.Frame(rpad, bg=SURFACE)
+        label_row.pack(fill="x")
         tk.Label(
-            upsell_header, text="Need more room?", bg=BG, fg=TEXT,
+            label_row, text="Premium Token", bg=SURFACE, fg=TEXT,
             font=FONT_H2, anchor="w",
-        ).pack(anchor="w")
-        tk.Label(
-            upsell_header,
-            # TODO(quota-view): rewrite the upsell copy with marketing.
-            text=(
-                "Frag is built and hosted by one person. "
-                "Patreon supporters get extra cloud storage and keep the servers running."
-            ),
-            bg=BG, fg=TEXT_DIM, font=FONT_DIM, anchor="w", justify="left",
-            wraplength=900,
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(side="left")
+        get_link = tk.Label(
+            label_row, text="Get a Token  ↗",
+            bg=SURFACE, fg=PRIMARY, font=FONT_DIM, cursor="hand2",
+        )
+        get_link.pack(side="right")
+        get_link.bind("<Button-1>", lambda _e: webbrowser.open(PATREON_URL))
 
-        # ---- tier cards row -------------------------------------------------
-        tiers_row = tk.Frame(self, bg=BG)
-        tiers_row.pack(fill="x", pady=(8, 12))
-        for i, tier in enumerate(STORAGE_TIERS):
-            self._build_tier_card(tiers_row, tier).pack(
-                side="left", fill="both", expand=True,
-                padx=(0 if i == 0 else 10, 0),
-            )
-
-        # ---- big CTA --------------------------------------------------------
-        cta_row = tk.Frame(self, bg=BG)
-        cta_row.pack(fill="x", pady=(4, 0))
+        # Input + Redeem button row.
+        entry_row = tk.Frame(rpad, bg=SURFACE)
+        entry_row.pack(fill="x", pady=(10, 0))
+        self._token_var = ctk.StringVar()
+        self._token_entry = ctk.CTkEntry(
+            entry_row, textvariable=self._token_var,
+            placeholder_text="fragsup_…",
+            fg_color=SURFACE_HI, border_color=SURFACE_HI, text_color=TEXT,
+            height=36, corner_radius=8,
+        )
+        self._token_entry.pack(side="left", fill="x", expand=True)
         primary_button(
-            cta_row, text="Support Frag on Patreon  ↗",
-            height=44, font=FONT_H2,
-            command=lambda: webbrowser.open(PATREON_URL),
-        ).pack(side="left")
+            entry_row, text="Redeem", width=120, height=36,
+            command=self._on_redeem_clicked,
+        ).pack(side="left", padx=(8, 0))
+
+        self._redeem_status = tk.Label(
+            rpad, text="", bg=SURFACE, fg=TEXT_DIM,
+            font=FONT_DIM, anchor="w", justify="left", wraplength=900,
+        )
+        self._redeem_status.pack(fill="x", pady=(8, 0))
+
+        # Release row: only relevant when a token is held; button stays
+        # disabled until quota.supporter_tokens_held > 0 so the row's
+        # visible at all times for layout stability.
+        release_row = tk.Frame(rpad, bg=SURFACE)
+        release_row.pack(fill="x", pady=(10, 0))
         tk.Label(
-            cta_row,
-            # TODO(quota-view): swap this for the actual link / handle once decided.
-            text="  patreon.com/PLACEHOLDER_FRAG",
-            bg=BG, fg=TEXT_FAINT, font=FONT_DIM,
-        ).pack(side="left", padx=(12, 0))
-
-    def _build_tier_card(self, parent, tier: dict) -> tk.Frame:
-        outline = PRIMARY if tier["highlight"] else SURFACE_HI
-        wrap = tk.Frame(parent, bg=outline)
-        inner = tk.Frame(wrap, bg=SURFACE)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-
-        pad = tk.Frame(inner, bg=SURFACE)
-        pad.pack(fill="both", expand=True, padx=18, pady=16)
-
-        # Header row: name + optional "best value" pill.
-        header = tk.Frame(pad, bg=SURFACE)
-        header.pack(fill="x")
-        tk.Label(
-            header, text=tier["name"], bg=SURFACE, fg=TEXT,
-            font=FONT_H2, anchor="w",
-        ).pack(side="left")
-        if tier["highlight"]:
-            _pill(header, "most popular", PRIMARY, PRIMARY_SOFT).pack(
-                side="right",
-            )
-
-        # Storage size (big).
-        tk.Label(
-            pad, text=_fmt_bytes(tier["storage_bytes"]),
-            bg=SURFACE, fg=TEXT, font=FONT_DISPLAY, anchor="w",
-        ).pack(fill="x", pady=(8, 0))
-
-        # Price.
-        tk.Label(
-            pad, text=tier["price"], bg=SURFACE,
-            fg=PRIMARY if tier["highlight"] else TEXT_DIM,
-            font=FONT_BODY, anchor="w",
-        ).pack(fill="x")
-
-        # Tagline.
-        tk.Label(
-            pad, text=tier["tagline"], bg=SURFACE, fg=TEXT_DIM,
-            font=FONT_DIM, anchor="w", justify="left", wraplength=240,
-        ).pack(fill="x", pady=(10, 0))
-
-        return wrap
+            release_row,
+            text="Tokens are single-use: release yours to redeem it on another account.",
+            bg=SURFACE, fg=TEXT_FAINT, font=FONT_TINY, anchor="w",
+            justify="left", wraplength=720,
+        ).pack(side="left", fill="x", expand=True)
+        self._release_btn = ghost_button(
+            release_row, text="Release my token", width=160, height=30,
+            command=self._on_release_clicked, state="disabled",
+        )
+        self._release_btn.pack(side="right")
 
     # ---- data -------------------------------------------------------------
 
@@ -1989,9 +2123,7 @@ class StorageView(View):
             return self.app.client.quota()
 
         def done(payload: dict):
-            self._quota_bytes = int(payload.get("quota_bytes", 0))
-            self._used_bytes = int(payload.get("used_bytes", 0))
-            self._render_usage()
+            self._apply_quota_payload(payload)
 
         def fail(_exc: Exception):
             self._usage_title.configure(text="Couldn't reach server")
@@ -2003,6 +2135,29 @@ class StorageView(View):
             work, on_done=done, on_error=fail, status="Loading quota…",
         )
 
+    def _apply_quota_payload(self, payload: dict) -> None:
+        self._quota_bytes = int(payload.get("quota_bytes", 0))
+        self._used_bytes = int(payload.get("used_bytes", 0))
+        self._base_quota_bytes = int(payload.get("base_quota_bytes", self._quota_bytes))
+        self._bonus_bytes = int(payload.get("supporter_bonus_bytes", 0))
+        self._tokens_held = int(payload.get("supporter_tokens_held", 0))
+        self._render_usage()
+        self._render_plan_chip()
+
+    def _render_plan_chip(self) -> None:
+        if self._tokens_held > 0:
+            self._plan_chip.configure(
+                text=f"✦ Premium — +{_fmt_bytes(self._bonus_bytes)} bonus active",
+                fg=PRIMARY, bg=PRIMARY_SOFT,
+            )
+            self._release_btn.configure(state="normal")
+        else:
+            self._plan_chip.configure(
+                text="Free plan — redeem a Premium token below to upgrade",
+                fg=TEXT_DIM, bg=SURFACE,
+            )
+            self._release_btn.configure(state="disabled")
+
     def _render_usage(self) -> None:
         quota = max(self._quota_bytes, 1)
         used = max(self._used_bytes, 0)
@@ -2013,10 +2168,14 @@ class StorageView(View):
         )
         if pct >= 0.9:
             warn_color = ERROR
-            msg = "You're almost out of room — consider supporting Frag for more storage."
+            msg = (
+                "You're almost out of room — redeem a Premium token for +50 GiB."
+                if self._tokens_held == 0
+                else "You're almost out of room."
+            )
         elif pct >= 0.75:
             warn_color = WARNING
-            msg = "Heads up: you're past 75% of your free quota."
+            msg = "Heads up: you're past 75% of your quota."
         else:
             warn_color = TEXT_DIM
             msg = f"{_fmt_bytes(max(quota - used, 0))} free."
@@ -2028,6 +2187,76 @@ class StorageView(View):
             ERROR if pct >= 0.9 else WARNING if pct >= 0.75 else PRIMARY
         )
         self._redraw_bar()
+
+    # ---- token actions ---------------------------------------------------
+
+    def _on_redeem_clicked(self) -> None:
+        token = self._token_var.get().strip()
+        if not token:
+            self._redeem_status.configure(
+                text="Paste your Premium token first.", fg=WARNING,
+            )
+            return
+
+        self._redeem_status.configure(text="Redeeming…", fg=TEXT_DIM)
+
+        def work():
+            return self.app.client.claim_supporter_token(token)
+
+        def done(payload: dict):
+            self._token_var.set("")
+            self._apply_quota_payload(payload)
+            self._redeem_status.configure(
+                text="Token redeemed — +50 GiB unlocked.", fg=SUCCESS,
+            )
+
+        def fail(exc: Exception):
+            msg = str(exc)
+            if msg.startswith("409:"):
+                friendly = "That token is already in use on another account."
+            elif msg.startswith("404:"):
+                friendly = "We don't recognise that token. Double-check it for typos."
+            elif msg.startswith("400:"):
+                friendly = "That doesn't look like a valid token."
+            else:
+                friendly = f"Couldn't redeem token: {msg}"
+            self._redeem_status.configure(text=friendly, fg=ERROR)
+
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status="Redeeming token…",
+        )
+
+    def _on_release_clicked(self) -> None:
+        if self._tokens_held == 0:
+            return
+        if not messagebox.askyesno(
+            "Frag",
+            "Release your Premium token?\n\n"
+            "Your quota will drop back to the Free tier until you redeem "
+            "the token again here or on another account.",
+        ):
+            return
+
+        self._redeem_status.configure(text="Releasing…", fg=TEXT_DIM)
+
+        def work():
+            return self.app.client.release_supporter_token()
+
+        def done(_payload: dict):
+            self._redeem_status.configure(
+                text="Token released — it's now free to redeem elsewhere.",
+                fg=TEXT_DIM,
+            )
+            self.refresh_async()
+
+        def fail(exc: Exception):
+            self._redeem_status.configure(
+                text=f"Couldn't release token: {exc}", fg=ERROR,
+            )
+
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status="Releasing token…",
+        )
 
     def _redraw_bar(self) -> None:
         if not hasattr(self, "_bar_canvas"):

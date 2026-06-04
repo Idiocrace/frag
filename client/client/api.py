@@ -163,9 +163,43 @@ class FragClient:
         return resp.json().get("files", [])
 
     def quota(self) -> dict:
-        """Return ``{quota_bytes, used_bytes, remaining_bytes, user_id}``."""
+        """Return ``{quota_bytes, used_bytes, remaining_bytes, user_id, ...}``.
+
+        Response also includes ``base_quota_bytes``, ``supporter_bonus_bytes``,
+        and ``supporter_tokens_held`` so the client can show the donator state.
+        """
         resp = self.session.get(
             self._url("/quota"), headers=self._authed(), timeout=DEFAULT_TIMEOUT
+        )
+        if resp.status_code != 200:
+            raise FragAPIError(self._format_error(resp))
+        return resp.json()
+
+    def claim_supporter_token(self, token: str) -> dict:
+        """Bind a donator token to the current account.  Returns updated quota.
+
+        Raises :class:`FragAPIError` whose message starts with ``409:`` when
+        the token is already held by another account, or ``404:`` when the
+        token is unknown.
+        """
+        resp = self.session.post(
+            self._url("/supporter/claim"),
+            headers=self._authed(),
+            json={"token": token},
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            raise FragAPIError(self._format_error(resp))
+        return resp.json()
+
+    def release_supporter_token(self, token: str = "") -> dict:
+        """Release the held token (or all of them if *token* is empty)."""
+        body = {"token": token} if token else {}
+        resp = self.session.post(
+            self._url("/supporter/release"),
+            headers=self._authed(),
+            json=body,
+            timeout=DEFAULT_TIMEOUT,
         )
         if resp.status_code != 200:
             raise FragAPIError(self._format_error(resp))

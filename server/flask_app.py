@@ -44,6 +44,13 @@ from werkzeug.utils import secure_filename
 
 from pd_client import PDClient, PDClientError
 from session_cache import CachedSession, SessionCache
+from supporter_tokens import (
+    SupporterTokenError,
+    SupporterTokenStore,
+    TokenAlreadyClaimed,
+    TokenNotClaimedByUser,
+    UnknownToken,
+)
 
 
 log = logging.getLogger(__name__)
@@ -61,6 +68,13 @@ MAX_FILE_BYTES = int(os.environ.get("FRAG_MAX_FILE_BYTES", 2 * 1024 * 1024 * 102
 # Per-user storage quota.  Free tier is 10 GiB; everything written into the
 # user's directory (uploads + brokered downloads) counts against it.
 USER_QUOTA_BYTES = int(os.environ.get("FRAG_USER_QUOTA_BYTES", 10 * 1024 * 1024 * 1024))
+# Where supporter tokens are persisted.  Holding a claimed token adds
+# +50 GiB to that user's quota (see supporter_tokens.SUPPORTER_BONUS_BYTES).
+SUPPORTER_TOKENS_PATH = Path(
+    os.environ.get(
+        "FRAG_SUPPORTER_TOKENS", str(USER_DATA_ROOT / ".supporter_tokens.json")
+    )
+)
 DOWNLOAD_TIMEOUT = 30
 DOWNLOAD_WALL_TIMEOUT = 300
 USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -77,8 +91,9 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_BYTES
 USER_DATA_ROOT.mkdir(parents=True, exist_ok=True)
 SESSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-pd = PDClient(config.MozmdNXZnRXAN9pG["_iMfGvUf0hly8ADB"])
+pd = PDClient(config.WDDM0cy3KQsGp3O3["D5KulrP78RSq4ZBY"])
 sessions = SessionCache(SESSION_CACHE_PATH)
+supporter_tokens = SupporterTokenStore(SUPPORTER_TOKENS_PATH)
 
 
 # ----------------------------------------------------------------------
@@ -107,21 +122,31 @@ def user_usage_bytes(user_id: str) -> int:
     return total
 
 
+def user_quota_bytes(user_id: str) -> int:
+    """Base quota + any supporter-token bonuses currently held by the user."""
+    return USER_QUOTA_BYTES + supporter_tokens.bonus_for_user(user_id)
+
+
 def quota_remaining(user_id: str) -> int:
-    return max(USER_QUOTA_BYTES - user_usage_bytes(user_id), 0)
+    return max(user_quota_bytes(user_id) - user_usage_bytes(user_id), 0)
 
 
 def _quota_error(user_id: str, attempted: int) -> tuple:
     """JSON 507 response body when a write would exceed the user's quota."""
     used = user_usage_bytes(user_id)
+    quota = user_quota_bytes(user_id)
     return (
-        jsonify({
-            "error": "Storage quota exceeded",
-            "quota_bytes": USER_QUOTA_BYTES,
-            "used_bytes": used,
-            "remaining_bytes": max(USER_QUOTA_BYTES - used, 0),
-            "attempted_bytes": attempted,
-        }),
+        jsonify(
+            {
+                "error": "Storage quota exceeded",
+                "quota_bytes": quota,
+                "base_quota_bytes": USER_QUOTA_BYTES,
+                "supporter_bonus_bytes": supporter_tokens.bonus_for_user(user_id),
+                "used_bytes": used,
+                "remaining_bytes": max(quota - used, 0),
+                "attempted_bytes": attempted,
+            }
+        ),
         507,
     )
 
@@ -334,7 +359,7 @@ def upload_file():
     # If we're overwriting an existing file the old bytes will be freed, so
     # don't count them against the user's current usage when checking quota.
     existing = dest.stat().st_size if dest.is_file() else 0
-    remaining = max(USER_QUOTA_BYTES - user_usage_bytes(user_id) + existing, 0)
+    remaining = max(user_quota_bytes(user_id) - user_usage_bytes(user_id) + existing, 0)
 
     # Pre-check via Content-Length so we reject huge uploads before saving.
     declared = request.content_length
@@ -359,7 +384,7 @@ def upload_file():
             "user_id": user_id,
             "filename": filename,
             "size": size,
-            "quota_bytes": USER_QUOTA_BYTES,
+            "quota_bytes": user_quota_bytes(user_id),
             "used_bytes": user_usage_bytes(user_id),
         }
     )
@@ -404,12 +429,91 @@ def save_data():
 def quota_status():
     user_id = g.user.user_id
     used = user_usage_bytes(user_id)
-    return jsonify({
-        "user_id": user_id,
-        "quota_bytes": USER_QUOTA_BYTES,
-        "used_bytes": used,
-        "remaining_bytes": max(USER_QUOTA_BYTES - used, 0),
-    })
+    quota = user_quota_bytes(user_id)
+    bonus = supporter_tokens.bonus_for_user(user_id)
+    held = supporter_tokens.tokens_for_user(user_id)
+    return jsonify(
+        {
+            "user_id": user_id,
+            "quota_bytes": quota,
+            "base_quota_bytes": USER_QUOTA_BYTES,
+            "supporter_bonus_bytes": bonus,
+            "supporter_tokens_held": len(held),
+            "used_bytes": used,
+            "remaining_bytes": max(quota - used, 0),
+        }
+    )
+
+
+@app.route("/frag/v1/supporter/claim", methods=["POST"])
+@login_required
+def supporter_claim():
+    """Bind a supporter token to the calling user.
+
+    Body: ``{"token": "fragsup_..."}``.  Returns the updated quota or 409
+    if the token is already held by someone else, 404 if unknown.
+    """
+    user_id = g.user.user_id
+    payload = request.get_json(silent=True) or {}
+    token = (payload.get("token") or "").strip()
+    if not token:
+        return jsonify({"error": "Missing 'token' in body"}), 400
+
+    try:
+        supporter_tokens.claim(token, user_id)
+    except UnknownToken:
+        return jsonify({"error": "Unknown supporter token"}), 404
+    except TokenAlreadyClaimed as exc:
+        # Don't leak the other user's id to clients.
+        log.info(
+            "Supporter token claim conflict for user=%s already_held_by=%s",
+            user_id,
+            exc.claimed_by,
+        )
+        return jsonify({"error": "Token already in use on another account"}), 409
+    except SupporterTokenError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    used = user_usage_bytes(user_id)
+    quota = user_quota_bytes(user_id)
+    return jsonify(
+        {
+            "message": "Supporter token claimed",
+            "user_id": user_id,
+            "quota_bytes": quota,
+            "base_quota_bytes": USER_QUOTA_BYTES,
+            "supporter_bonus_bytes": supporter_tokens.bonus_for_user(user_id),
+            "supporter_tokens_held": len(supporter_tokens.tokens_for_user(user_id)),
+            "used_bytes": used,
+            "remaining_bytes": max(quota - used, 0),
+        }
+    )
+
+
+@app.route("/frag/v1/supporter/release", methods=["POST"])
+@login_required
+def supporter_release():
+    """Release a supporter token currently held by the calling user.
+
+    Body: ``{"token": "fragsup_..."}``.  Omitting the token releases every
+    token held by the user.
+    """
+    user_id = g.user.user_id
+    payload = request.get_json(silent=True) or {}
+    token = (payload.get("token") or "").strip()
+
+    if not token:
+        freed = supporter_tokens.release_user(user_id)
+        return jsonify({"message": f"Released {freed} token(s)", "released": freed})
+
+    try:
+        supporter_tokens.release(token, user_id)
+    except UnknownToken:
+        return jsonify({"error": "Unknown supporter token"}), 404
+    except TokenNotClaimedByUser:
+        return jsonify({"error": "Token is not currently held by you"}), 403
+
+    return jsonify({"message": "Supporter token released", "released": 1})
 
 
 @app.route("/frag/v1/files/<path:filename>", methods=["DELETE"])

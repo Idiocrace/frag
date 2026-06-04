@@ -5,3 +5,6 @@
 /generate_config.py
 /config.py
 /userdata/
+# Supporter-token store: each line grants someone +50 GiB if leaked.
+.supporter_tokens.json
+*.supporter_tokens.json
