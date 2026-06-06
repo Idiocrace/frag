@@ -27,8 +27,8 @@ class CachedSession:
     token: str
     user_id: str
     username: str
-    expires_at: float       # unix seconds; from PD's authoritative answer
-    cached_at: float        # unix seconds; when WE last validated
+    expires_at: float  # unix seconds; from PD's authoritative answer
+    cached_at: float  # unix seconds; when WE last validated
 
     @property
     def is_pd_expired(self) -> bool:

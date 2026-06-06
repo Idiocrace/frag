@@ -42,14 +42,18 @@ class PDClient:
                 "FRAG_PD_API_KEY env var is required. Register an app at "
                 f"{DEFAULT_PD_BASE_URL}/account/apps and set the key."
             )
-        self.base_url = (base_url or os.environ.get("FRAG_PD_BASE_URL") or DEFAULT_PD_BASE_URL).rstrip("/")
+        self.base_url = (
+            base_url or os.environ.get("FRAG_PD_BASE_URL") or DEFAULT_PD_BASE_URL
+        ).rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
-        self.session.headers.update({
-            "X-API-Key": self.api_key,
-            "User-Agent": "frag-server/1.0",
-            "Accept": "application/json",
-        })
+        self.session.headers.update(
+            {
+                "X-API-Key": self.api_key,
+                "User-Agent": "frag-server/1.0",
+                "Accept": "application/json",
+            }
+        )
 
     # ------------------------------------------------------------------
     # Login broker
@@ -100,7 +104,9 @@ class PDClient:
         try:
             return resp.json()
         except ValueError:
-            raise PDClientError(f"PD returned non-JSON ({resp.status_code}): {resp.text[:200]}")
+            raise PDClientError(
+                f"PD returned non-JSON ({resp.status_code}): {resp.text[:200]}"
+            )
 
     def _format_error(self, resp: requests.Response) -> str:
         try:

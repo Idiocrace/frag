@@ -57,7 +57,9 @@ def python_identifier(k: int = 16) -> str:
     return first + rest
 
 
-def unique_identifiers(count: int, *, length: int = 16, exclude: set[str] | None = None) -> list[str]:
+def unique_identifiers(
+    count: int, *, length: int = 16, exclude: set[str] | None = None
+) -> list[str]:
     """Return *count* unique identifiers, avoiding any in *exclude*."""
     used = set(exclude or ())
     out: list[str] = []
@@ -109,10 +111,31 @@ API_HOSTS = (
 )
 
 URL_PATH_WORDS = (
-    "v1", "v2", "v3", "api", "users", "accounts", "orgs", "teams",
-    "projects", "repos", "events", "webhooks", "tokens", "sessions",
-    "billing", "subscriptions", "messages", "channels", "files",
-    "uploads", "search", "query", "items", "entities", "records",
+    "v1",
+    "v2",
+    "v3",
+    "api",
+    "users",
+    "accounts",
+    "orgs",
+    "teams",
+    "projects",
+    "repos",
+    "events",
+    "webhooks",
+    "tokens",
+    "sessions",
+    "billing",
+    "subscriptions",
+    "messages",
+    "channels",
+    "files",
+    "uploads",
+    "search",
+    "query",
+    "items",
+    "entities",
+    "records",
 )
 
 DB_HOSTS = (
@@ -131,25 +154,61 @@ DB_HOSTS = (
 )
 
 DB_NAMES = (
-    "users", "sessions", "billing", "events", "analytics", "metrics",
-    "auth", "prod", "staging", "main", "app", "core", "ledger", "audit",
+    "users",
+    "sessions",
+    "billing",
+    "events",
+    "analytics",
+    "metrics",
+    "auth",
+    "prod",
+    "staging",
+    "main",
+    "app",
+    "core",
+    "ledger",
+    "audit",
 )
 
 DB_USERS = ("app", "service", "readonly", "writer", "admin", "worker")
 
 AWS_REGIONS = (
-    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
-    "eu-west-1", "eu-central-1", "ap-southeast-1", "ap-northeast-1",
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "eu-west-1",
+    "eu-central-1",
+    "ap-southeast-1",
+    "ap-northeast-1",
 )
 
 EMAIL_DOMAINS = (
-    "gmail.com", "outlook.com", "yahoo.com", "protonmail.com",
-    "pixelateddream.net", "example.org", "company.io", "hey.com",
+    "gmail.com",
+    "outlook.com",
+    "yahoo.com",
+    "protonmail.com",
+    "pixelateddream.net",
+    "example.org",
+    "company.io",
+    "hey.com",
 )
 
 FIRST_NAMES = (
-    "alex", "sam", "jordan", "taylor", "morgan", "casey", "riley",
-    "drew", "quinn", "avery", "blake", "rowan", "jess", "noah",
+    "alex",
+    "sam",
+    "jordan",
+    "taylor",
+    "morgan",
+    "casey",
+    "riley",
+    "drew",
+    "quinn",
+    "avery",
+    "blake",
+    "rowan",
+    "jess",
+    "noah",
 )
 
 
@@ -179,7 +238,9 @@ def decoy_github_oauth() -> str:
 
 
 def decoy_aws_access_key() -> str:
-    return "AKIA" + "".join(random.choices(string.ascii_uppercase + string.digits, k=16))
+    return "AKIA" + "".join(
+        random.choices(string.ascii_uppercase + string.digits, k=16)
+    )
 
 
 def decoy_aws_secret() -> str:
@@ -189,14 +250,16 @@ def decoy_aws_secret() -> str:
 def decoy_aws_arn() -> str:
     region = random.choice(AWS_REGIONS)
     account = "".join(random.choices(string.digits, k=12))
-    service, resource = random.choice((
-        ("iam", f"role/{alnum(random.randint(8, 16))}"),
-        ("s3", f"bucket/{alnum(random.randint(6, 12), lower=True)}"),
-        ("sqs", f"queue-{alnum(8, lower=True)}"),
-        ("lambda", f"function:{alnum(random.randint(8, 16), lower=True)}"),
-        ("secretsmanager", f"secret:{alnum(8, lower=True)}-{alnum(6)}"),
-        ("dynamodb", f"table/{alnum(random.randint(6, 12), lower=True)}"),
-    ))
+    service, resource = random.choice(
+        (
+            ("iam", f"role/{alnum(random.randint(8, 16))}"),
+            ("s3", f"bucket/{alnum(random.randint(6, 12), lower=True)}"),
+            ("sqs", f"queue-{alnum(8, lower=True)}"),
+            ("lambda", f"function:{alnum(random.randint(8, 16), lower=True)}"),
+            ("secretsmanager", f"secret:{alnum(8, lower=True)}-{alnum(6)}"),
+            ("dynamodb", f"table/{alnum(random.randint(6, 12), lower=True)}"),
+        )
+    )
     return f"arn:aws:{service}:{region}:{account}:{resource}"
 
 
@@ -232,8 +295,11 @@ def decoy_url() -> str:
 def decoy_db_url() -> str:
     scheme = random.choice(("postgres", "postgresql", "mysql", "redis", "mongodb+srv"))
     port = {
-        "postgres": 5432, "postgresql": 5432, "mysql": 3306,
-        "redis": 6379, "mongodb+srv": 27017,
+        "postgres": 5432,
+        "postgresql": 5432,
+        "mysql": 3306,
+        "redis": 6379,
+        "mongodb+srv": 27017,
     }[scheme]
     return (
         f"{scheme}://{random.choice(DB_USERS)}:{alnum(24)}@"
@@ -334,7 +400,10 @@ _SHAPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aws_access_key", re.compile(r"^AKIA[A-Z0-9]{16}$")),
     ("aws_arn", re.compile(r"^arn:aws:[a-z0-9-]+:[a-z0-9-]*:\d{12}:")),
     ("jwt", re.compile(r"^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")),
-    ("uuid", re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")),
+    (
+        "uuid",
+        re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+    ),
     ("db_url", re.compile(r"^(postgres|postgresql|mysql|redis|mongodb\+srv)://")),
     ("url", re.compile(r"^https?://")),
     ("bearer", re.compile(r"^Bearer ")),

@@ -2,3 +2,8 @@ customtkinter==5.2.2
 requests==2.32.3
 nbtlib==2.0.4
 pillow==12.1.0
+# PD platform SDK — used for PD API calls (catalog, licensing).  Frag-server-
+# specific endpoints (/frag/v1/*) still go through client/api.py's hand-rolled
+# requests path because they live on a Frag-side base URL with a different
+# auth model (PD-brokered session token, not a PD API key).
+pdapi>=0.1.0,<0.2

@@ -1,3 +1,43 @@
+Frag 0.3.0 — what's new
+=======================
+
+Worlds and mods, equal at last
+------------------------------
+- Worlds sync the same way mods do — no more "Also sync worlds" toggle
+  in Settings, no more "world sync on/off" chip on the Worlds tab.
+  Every world you don't explicitly exclude rides along with every sync.
+- If you previously had world sync turned off, it's on now.  Per-world
+  selection (the checkboxes in the Worlds tab) still controls which
+  worlds actually go up — that hasn't changed.
+
+Pixelated Dream integration
+---------------------------
+- New "Check for updates" button in Settings.  Asks pixelateddream.net
+  directly whether a newer Frag is available and offers a one-click
+  link to the download page.
+- Premium Token (new in 0.2.0) and cloud quota stay where they were;
+  the redemption flow continues to run through the Frag server.
+
+Behind the scenes
+-----------------
+- Started laying groundwork for the official PD Python SDK ("pdapi" on
+  PyPI).  Future versions of Frag will use it for all PD-platform
+  calls; this release only uses it indirectly for the update-check
+  endpoint, but the dependency is now declared in requirements.txt.
+
+Technical notes
+~~~~~~~~~~~~~~~
+- Config: `sync_worlds` retained as an always-True field for one
+  release so older clients pulling settings from cloud don't silently
+  regress to "worlds off".  Safe to drop entirely in 0.4.0.
+- pd_catalog.py: new module wrapping PD's GET /api/v1/software/<slug>/
+  check-update endpoint.  Currently hand-rolls the HTTP call;
+  migration to pdapi.software.check_update() blocked on pdapi v0.2
+  shipping a software resource.
+- 0.3.0 migration force-enables sync_worlds=True regardless of the
+  cloud-synced or on-disk value.
+
+
 Frag 0.2.0 — what's new
 =======================
 

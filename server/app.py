@@ -31,20 +31,19 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
-import config
+
 
 import requests
 from flask import Flask, abort, g, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from pd_client import PDClient, PDClientError
-from session_cache import CachedSession, SessionCache
-from supporter_tokens import (
+from libs.pdcli import PDClient, PDClientError
+from libs.session_cache import CachedSession, SessionCache
+from libs.supporter_tokens import (
     SupporterTokenError,
     SupporterTokenStore,
     TokenAlreadyClaimed,
@@ -52,32 +51,21 @@ from supporter_tokens import (
     UnknownToken,
 )
 
+from config import (
+    PD_API_KEY,
+    USER_DATA_ROOT,
+    SESSION_CACHE_PATH,
+    SUPPORTER_TOKENS_PATH,
+    MAX_FILE_BYTES,
+    USER_QUOTA_BYTES,
+    SUPPORTER_BONUS_BYTES,
+    DOWNLOAD_TIMEOUT,
+    DOWNLOAD_WALL_TIMEOUT,
+    USER_ID_RE,
+)
+
 
 log = logging.getLogger(__name__)
-
-
-# ----------------------------------------------------------------------
-# Configuration (env-driven)
-# ----------------------------------------------------------------------
-
-USER_DATA_ROOT = Path(os.environ.get("FRAG_USER_DATA_ROOT", "userdata")).resolve()
-SESSION_CACHE_PATH = Path(
-    os.environ.get("FRAG_SESSION_CACHE", str(USER_DATA_ROOT / ".sessions.json"))
-)
-MAX_FILE_BYTES = int(os.environ.get("FRAG_MAX_FILE_BYTES", 2 * 1024 * 1024 * 1024))
-# Per-user storage quota.  Free tier is 10 GiB; everything written into the
-# user's directory (uploads + brokered downloads) counts against it.
-USER_QUOTA_BYTES = int(os.environ.get("FRAG_USER_QUOTA_BYTES", 10 * 1024 * 1024 * 1024))
-# Where supporter tokens are persisted.  Holding a claimed token adds
-# +50 GiB to that user's quota (see supporter_tokens.SUPPORTER_BONUS_BYTES).
-SUPPORTER_TOKENS_PATH = Path(
-    os.environ.get(
-        "FRAG_SUPPORTER_TOKENS", str(USER_DATA_ROOT / ".supporter_tokens.json")
-    )
-)
-DOWNLOAD_TIMEOUT = 30
-DOWNLOAD_WALL_TIMEOUT = 300
-USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 # ----------------------------------------------------------------------
@@ -88,12 +76,12 @@ USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 app = Flask("frag_backend")
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_BYTES
 
-USER_DATA_ROOT.mkdir(parents=True, exist_ok=True)
-SESSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+USER_DATA_ROOT.mkdir(parents=True, exist_ok=True)  # type: ignore
+SESSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)  # type: ignore
 
-pd = PDClient(config.WDDM0cy3KQsGp3O3["D5KulrP78RSq4ZBY"])
-sessions = SessionCache(SESSION_CACHE_PATH)
-supporter_tokens = SupporterTokenStore(SUPPORTER_TOKENS_PATH)
+pd = PDClient(PD_API_KEY)  # type: ignore
+sessions = SessionCache(SESSION_CACHE_PATH)  # type: ignore
+supporter_tokens = SupporterTokenStore(SUPPORTER_TOKENS_PATH)  # type: ignore
 
 
 # ----------------------------------------------------------------------
@@ -104,7 +92,7 @@ supporter_tokens = SupporterTokenStore(SUPPORTER_TOKENS_PATH)
 def user_dir(user_id: str) -> Path:
     if not USER_ID_RE.match(user_id):
         abort(400, description="Invalid user id")
-    return USER_DATA_ROOT / user_id
+    return USER_DATA_ROOT / user_id  # type: ignore
 
 
 def user_usage_bytes(user_id: str) -> int:
@@ -124,7 +112,9 @@ def user_usage_bytes(user_id: str) -> int:
 
 def user_quota_bytes(user_id: str) -> int:
     """Base quota + any supporter-token bonuses currently held by the user."""
-    return USER_QUOTA_BYTES + supporter_tokens.bonus_for_user(user_id)
+    return USER_QUOTA_BYTES + supporter_tokens.bonus_for_user(
+        user_id, SUPPORTER_BONUS_BYTES
+    )
 
 
 def quota_remaining(user_id: str) -> int:
@@ -141,7 +131,9 @@ def _quota_error(user_id: str, attempted: int) -> tuple:
                 "error": "Storage quota exceeded",
                 "quota_bytes": quota,
                 "base_quota_bytes": USER_QUOTA_BYTES,
-                "supporter_bonus_bytes": supporter_tokens.bonus_for_user(user_id),
+                "supporter_bonus_bytes": supporter_tokens.bonus_for_user(
+                    user_id, SUPPORTER_BONUS_BYTES
+                ),
                 "used_bytes": used,
                 "remaining_bytes": max(quota - used, 0),
                 "attempted_bytes": attempted,
@@ -430,7 +422,7 @@ def quota_status():
     user_id = g.user.user_id
     used = user_usage_bytes(user_id)
     quota = user_quota_bytes(user_id)
-    bonus = supporter_tokens.bonus_for_user(user_id)
+    bonus = supporter_tokens.bonus_for_user(user_id, SUPPORTER_BONUS_BYTES)
     held = supporter_tokens.tokens_for_user(user_id)
     return jsonify(
         {
@@ -482,7 +474,9 @@ def supporter_claim():
             "user_id": user_id,
             "quota_bytes": quota,
             "base_quota_bytes": USER_QUOTA_BYTES,
-            "supporter_bonus_bytes": supporter_tokens.bonus_for_user(user_id),
+            "supporter_bonus_bytes": supporter_tokens.bonus_for_user(
+                user_id, SUPPORTER_BONUS_BYTES
+            ),
             "supporter_tokens_held": len(supporter_tokens.tokens_for_user(user_id)),
             "used_bytes": used,
             "remaining_bytes": max(quota - used, 0),

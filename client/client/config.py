@@ -50,7 +50,12 @@ class Config:
     device_name: str = ""
 
     # ---- synced (replicated across devices) --------------------------------
-    sync_worlds: bool = False
+    # ``sync_worlds`` was a master on/off switch in <=0.3.0; worlds are now
+    # first-class alongside mods (per-world opt-out via world_sync_excludes
+    # is still honoured).  Field retained as always-True so older clients
+    # pulling our settings payload don't silently regress to "worlds off".
+    # Safe to drop entirely once the install base has rolled past 0.4.0.
+    sync_worlds: bool = True
     mod_sync_excludes: list = field(default_factory=list)
     world_sync_excludes: list = field(default_factory=list)
 
@@ -81,6 +86,9 @@ class Config:
                 self.device_name = socket.gethostname() or "device"
             except OSError:
                 self.device_name = "device"
+        # 0.3.0 migration: worlds are now synced unconditionally.  Force-enable
+        # for any user upgrading from a previous version with the toggle off.
+        self.sync_worlds = True
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -133,3 +141,7 @@ class Config:
         for k in self.SYNCED_FIELDS:
             if k in payload:
                 setattr(self, k, payload[k])
+        # 0.3.0 migration: ignore a stale `sync_worlds=False` pulled from a
+        # device still running an older client.  Worlds are unconditionally
+        # synced now (per-world opt-out via world_sync_excludes still works).
+        self.sync_worlds = True

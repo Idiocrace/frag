@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from supporter_tokens import SupporterToken, SupporterTokenStore
+from libs.supporter_tokens import SupporterToken, SupporterTokenStore
 
 
 def _default_store_path() -> Path:
@@ -66,7 +66,9 @@ def main(argv: list[str]) -> int:
         try:
             count = int(args[0])
         except ValueError:
-            print(f"first arg must be an integer count, got {args[0]!r}", file=sys.stderr)
+            print(
+                f"first arg must be an integer count, got {args[0]!r}", file=sys.stderr
+            )
             return 2
     if len(args) >= 2:
         note = args[1]

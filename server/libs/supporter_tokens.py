@@ -114,9 +114,7 @@ class SupporterTokenStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp")
         payload = {
-            "tokens": {
-                tok: asdict(entry) for tok, entry in self._state.tokens.items()
-            },
+            "tokens": {tok: asdict(entry) for tok, entry in self._state.tokens.items()},
         }
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(tmp, self._path)
@@ -223,12 +221,10 @@ class SupporterTokenStore:
     def tokens_for_user(self, user_id: str) -> list[SupporterToken]:
         return [t for t in self._state.tokens.values() if t.claimed_by == user_id]
 
-    def bonus_for_user(self, user_id: str) -> int:
+    def bonus_for_user(self, user_id: str, bonus_bytes: int) -> int:
         """Total bonus bytes from every token currently held by *user_id*."""
         return sum(
-            SUPPORTER_BONUS_BYTES
-            for t in self._state.tokens.values()
-            if t.claimed_by == user_id
+            bonus_bytes for t in self._state.tokens.values() if t.claimed_by == user_id
         )
 
     def all_tokens(self) -> Iterable[SupporterToken]:

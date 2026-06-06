@@ -51,8 +51,6 @@ Run::
 from __future__ import annotations
 
 import logging
-import os
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -61,53 +59,12 @@ from discord import app_commands
 
 HERE = Path(__file__).resolve().parent
 
-# Let us import gen_supporter_token / supporter_tokens from the sibling
-# server directory without packaging gymnastics.
-sys.path.insert(0, str(HERE.parent / "server"))
+from libs.supporter_tokens import SupporterTokenStore  # noqa: E402
+from libs.user_tokens import UserTokenMap  # noqa: E402
 
-from gen_supporter_token import _default_store_path  # noqa: E402
-from supporter_tokens import SupporterTokenStore  # noqa: E402
-import config  # noqa: E402
-
-from user_tokens import UserTokenMap  # noqa: E402
-
+from config import BOT_TOKEN, STORE_PATH, BOT_DATA_PATH, GUILD_ID, ADMIN_ROLE_ID  # noqa: E402
 
 log = logging.getLogger("frag.bot")
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-
-def _store_path() -> Path:
-    """Path to the supporter-token JSON used by the frag server."""
-    env = os.environ.get("FRAG_SUPPORTER_TOKENS")
-    if env:
-        return Path(env)
-    return _default_store_path()
-
-
-def _bot_data_dir() -> Path:
-    env = os.environ.get("FRAG_BOT_DATA_DIR")
-    return Path(env) if env else HERE / "data"
-
-
-def _guild_obj() -> Optional[discord.Object]:
-    return (
-        discord.Object(id=int(config.WDDM0cy3KQsGp3O3["lt4XyZSo43D2tenV"]))
-        if config.WDDM0cy3KQsGp3O3["lt4XyZSo43D2tenV"]
-        else None
-    )
-
-
-def _admin_role_id() -> Optional[int]:
-    return (
-        int(config.WDDM0cy3KQsGp3O3["ejnuymoWvnVLxYR3"])
-        if config.WDDM0cy3KQsGp3O3["ejnuymoWvnVLxYR3"]
-        else None
-    )
-
 
 # ---------------------------------------------------------------------------
 # Bot
@@ -154,16 +111,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if not config.WDDM0cy3KQsGp3O3["qbBQCFaEjaDWdPpA"]:
-        print(
-            "Discord token is empty. Set 'bot-token' in "
-            "frag/server/generate_config.py and rerun it.",
-            file=sys.stderr,
-        )
-        return 2
-
-    store_path = _store_path()
-    bot_data = _bot_data_dir()
+    store_path = STORE_PATH
+    bot_data = BOT_DATA_PATH
     bot_data.mkdir(parents=True, exist_ok=True)
 
     store = SupporterTokenStore(store_path)
@@ -172,8 +121,10 @@ def main() -> int:
     log.info("Supporter token store: %s", store_path)
     log.info("Discord user map     : %s", bot_data / "discord_user_tokens.json")
 
-    bot = FragBot(store=store, user_map=user_map, guild=_guild_obj())
-    admin_role_id = _admin_role_id()
+    guild_object = discord.Object(id=GUILD_ID) if GUILD_ID else None
+
+    bot = FragBot(store=store, user_map=user_map, guild=guild_object)
+    admin_role_id = ADMIN_ROLE_ID
 
     # -----------------------------------------------------------------------
     # /token
@@ -329,7 +280,10 @@ def main() -> int:
     async def on_ready() -> None:
         log.info("Logged in as %s (id=%s)", bot.user, bot.user.id if bot.user else "?")
 
-    bot.run(config.WDDM0cy3KQsGp3O3["qbBQCFaEjaDWdPpA"], log_handler=None)
+    bot.run(
+        BOT_TOKEN,
+        log_handler=None,
+    )
     return 0
 
 

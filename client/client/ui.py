@@ -18,8 +18,10 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
+from . import __version__
 from .api import FragClient, unzip_into, zip_directory
 from .config import Config
+from .pd_catalog import PDCatalogClient
 from .resources import ICON_ICO, ICON_PNG, asset
 from .scanner import ModInfo, scan_mods
 from .sync_settings import RemoteSettings, pull_settings, push_settings
@@ -186,11 +188,25 @@ SECTIONS = [
 
 class FragApp(ctk.CTk):
     def __init__(self):
+        _debug = os.environ.get("FRAG_DEBUG_FREEZES")
+        if _debug:
+            import time as _t, logging as _l
+            _phase_t0 = _t.perf_counter()
+            def _phase(name):
+                nonlocal _phase_t0
+                now = _t.perf_counter()
+                _l.warning("FragApp.__init__ %s: %.0fms", name, (now - _phase_t0) * 1000)
+                _phase_t0 = now
+        else:
+            def _phase(_name): pass
+
         super().__init__(fg_color=BG)
+        _phase("super().__init__")
         self.title("Frag — Mod Manager")
         self.geometry("1240x760")
         self.minsize(1040, 660)
         self._apply_icon()
+        _phase("apply_icon")
 
         self.cfg = Config.load()
         self.client = FragClient(self.cfg)
@@ -199,14 +215,23 @@ class FragApp(ctk.CTk):
         self._views: dict[str, ctk.CTkFrame] = {}
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._current_section = "mods"
+        _phase("config + client")
 
         self._build_sidebar()
+        _phase("build_sidebar")
         self._build_content()
+        _phase("build_content")
         self._build_status_bar()
+        _phase("build_status_bar")
 
         self._show_section("mods")
+        _phase("show_section('mods')")
+        # Stagger the initial refreshes so they don't both flood the main
+        # thread with widget-destroy + render work on the same tick.  The
+        # user lands on Mods first, so prioritize that scan; Worlds can
+        # wait until Mods has a chance to start animating its spinner.
         self.after(150, self.mods_view.refresh_async)
-        self.after(150, self.worlds_view.refresh)
+        self.after(450, self.worlds_view.refresh)
         self.after(200, self.refresh_connection)
         self.after(60_000, self._schedule_connection_check)
         # Global keyboard shortcuts
@@ -326,15 +351,26 @@ class FragApp(ctk.CTk):
             return False
 
     def _build_content(self) -> None:
+        _debug = os.environ.get("FRAG_DEBUG_FREEZES")
+        if _debug:
+            import time as _t, logging as _l
+            def _v(name, fn):
+                t0 = _t.perf_counter()
+                v = fn()
+                _l.warning("  build view %s: %.0fms", name, (_t.perf_counter() - t0) * 1000)
+                return v
+        else:
+            def _v(_name, fn): return fn()
+
         content = ctk.CTkFrame(self, fg_color=BG)
         content.pack(side="left", fill="both", expand=True)
 
         # Build each view as a hidden frame
-        self.mods_view = ModsView(content, self)
-        self.worlds_view = WorldsView(content, self)
-        self.sync_view = SyncView(content, self)
-        self.storage_view = StorageView(content, self)
-        self.settings_view = SettingsView(content, self)
+        self.mods_view = _v("ModsView", lambda: ModsView(content, self))
+        self.worlds_view = _v("WorldsView", lambda: WorldsView(content, self))
+        self.sync_view = _v("SyncView", lambda: SyncView(content, self))
+        self.storage_view = _v("StorageView", lambda: StorageView(content, self))
+        self.settings_view = _v("SettingsView", lambda: SettingsView(content, self))
 
         self._views = {
             "mods": self.mods_view,
@@ -379,6 +415,21 @@ class FragApp(ctk.CTk):
     def set_status(self, msg: str) -> None:
         self._status_var.set(msg)
 
+    # Any main-thread callback that runs longer than this is logged as a
+    # freeze candidate.  Helps catch work that should have moved to a
+    # worker thread but didn't.  Set FRAG_DEBUG_FREEZES=1 to enable.
+    _MAIN_THREAD_FREEZE_THRESHOLD_MS = 200
+
+    def _maybe_log_freeze(self, label: str, started_at: float) -> None:
+        if not os.environ.get("FRAG_DEBUG_FREEZES"):
+            return
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        if elapsed_ms >= self._MAIN_THREAD_FREEZE_THRESHOLD_MS:
+            import logging
+            logging.getLogger("frag.ui").warning(
+                "main-thread freeze: %s took %.0f ms", label, elapsed_ms,
+            )
+
     def run_in_thread(
         self,
         fn,
@@ -391,6 +442,10 @@ class FragApp(ctk.CTk):
         """Run a function in a background thread with UI callbacks."""
         if status:
             self.set_status(status)
+
+        # Capture the calling site for the freeze logger.  fn.__qualname__
+        # is the closure name (often "work"); fall back to function name.
+        label = getattr(fn, "__qualname__", None) or getattr(fn, "__name__", "fn")
 
         def worker():
             try:
@@ -405,9 +460,11 @@ class FragApp(ctk.CTk):
                 return
 
             def on_complete():
+                started = time.perf_counter()
                 if on_done:
                     on_done(result)
                 self.set_status("Ready.")
+                self._maybe_log_freeze(f"on_done({label})", started)
 
             self.after(0, on_complete)
 
@@ -739,7 +796,15 @@ class ModsView(View):
         self._apply_filter()
 
     def _apply_filter(self) -> None:
+        # Bump the generation counter first.  Any in-flight chunked render
+        # from a prior _apply_filter() will see its `gen` no longer matches
+        # and abort on its next tick, so we don't have to wait for it to
+        # finish before we start tearing down its widgets.
+        self._render_gen = getattr(self, "_render_gen", 0) + 1
         q = self.search_var.get().strip().lower()
+        # Synchronous destroy.  At ~1ms per row this is fine for typical
+        # mod folders; chunking it instead would risk new rows landing on
+        # top of half-destroyed old ones if the user mashes Refresh.
         for child in self.list_frame.winfo_children():
             child.destroy()
         filtered = [
@@ -802,15 +867,11 @@ class ModsView(View):
                 pass
             self._spinner_after_id = None
 
-        # Bump the generation counter so any in-flight chunked render
-        # from a prior _apply_filter() call aborts mid-loop instead of
-        # appending stale rows after we've started fresh.
-        self._render_gen = getattr(self, "_render_gen", 0) + 1
         self._render_rows_chunked(filtered, self._render_gen)
 
     def _render_rows_chunked(
         self, filtered: list[ModInfo], gen: int, start: int = 0,
-        chunk: int = 12,
+        chunk: int = 6,
     ) -> None:
         """Pack rows in small batches, yielding to the event loop between.
 
@@ -971,7 +1032,15 @@ class ModsView(View):
             pil_image = self._decode_icon_image_for_mod(mod)
             image_cache[mod.sha1] = pil_image
 
-        photo = ImageTk.PhotoImage(pil_image)
+        if os.environ.get("FRAG_DEBUG_FREEZES"):
+            import time as _t, logging as _l
+            t0 = _t.perf_counter()
+            photo = ImageTk.PhotoImage(pil_image)
+            elapsed = (_t.perf_counter() - t0) * 1000
+            if elapsed > 5:
+                _l.warning("    ImageTk.PhotoImage(%s): %.1fms", mod.best_name[:30], elapsed)
+        else:
+            photo = ImageTk.PhotoImage(pil_image)
         self._icon_cache[mod.sha1] = photo
         return photo
 
@@ -1063,18 +1132,6 @@ class WorldsView(View):
         )
         self.count_chip.pack(side="left")
 
-        self.sync_chip = ctk.CTkLabel(
-            toolbar,
-            text="",
-            font=FONT_TINY,
-            text_color=TEXT_DIM,
-            fg_color=SURFACE,
-            corner_radius=8,
-            padx=12,
-            height=36,
-        )
-        self.sync_chip.pack(side="left", padx=(10, 0))
-
         primary_button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
         ghost_button(
             toolbar, text="Select none", width=110, command=self._select_none
@@ -1130,10 +1187,6 @@ class WorldsView(View):
 
     def refresh(self) -> None:
         self.path_label.configure(text=str(self.app.cfg.saves_path))
-        if self.app.cfg.sync_worlds:
-            self.sync_chip.configure(text="world sync on", text_color=SUCCESS)
-        else:
-            self.sync_chip.configure(text="world sync off", text_color=TEXT_DIM)
 
         for child in self.list_frame.winfo_children():
             child.destroy()
@@ -1191,7 +1244,7 @@ class WorldsView(View):
         self.app.run_in_thread(work, on_done=done, status="Scanning worlds…")
 
     def _render_worlds_chunked(
-        self, worlds: list[Path], gen: int, start: int = 0, chunk: int = 12,
+        self, worlds: list[Path], gen: int, start: int = 0, chunk: int = 6,
     ) -> None:
         if gen != getattr(self, "_render_gen", gen):
             return
@@ -1745,10 +1798,9 @@ class SyncView(View):
         worlds = self.app.worlds_view.worlds
         selected_mods = sum(1 for m in mods if cfg.is_mod_synced(m.sha1))
         selected_worlds = sum(1 for w in worlds if cfg.is_world_synced(w.name))
-        parts = [f"{selected_mods}/{len(mods)} mods"]
-        if cfg.sync_worlds:
-            parts.append(f"{selected_worlds}/{len(worlds)} worlds")
-        self.selection_chip.configure(text="  ·  ".join(parts))
+        self.selection_chip.configure(
+            text=f"{selected_mods}/{len(mods)} mods  ·  {selected_worlds}/{len(worlds)} worlds",
+        )
 
     def _upload_clicked(self) -> None:
         if not _ensure_configured(self.app):
@@ -1761,9 +1813,7 @@ class SyncView(View):
         selected_worlds = [
             w for w in self.app.worlds_view.worlds if cfg.is_world_synced(w.name)
         ]
-        should_upload_worlds = (
-            cfg.sync_worlds and cfg.saves_path.is_dir() and selected_worlds
-        )
+        should_upload_worlds = bool(cfg.saves_path.is_dir() and selected_worlds)
 
         if not selected_mods and not should_upload_worlds:
             messagebox.showinfo(
@@ -2327,26 +2377,35 @@ class SettingsView(View):
         _labeled_path(paths, "Saves folder", self.saves_var)
         ctk.CTkLabel(paths, text="", height=6).pack()  # spacer
 
-        # Sync
-        sync = card(wrap)
-        sync.pack(fill="x", pady=(0, 16))
-        _section_header(sync, "Sync options", "")
-        self.worlds_var = ctk.BooleanVar(value=self.app.cfg.sync_worlds)
-        row = ctk.CTkFrame(sync, fg_color="transparent")
-        row.pack(fill="x", padx=22, pady=(4, 20))
-        ctk.CTkSwitch(
-            row,
-            text="Also sync worlds (saves folder)",
-            variable=self.worlds_var,
-            font=FONT_BODY,
-            text_color=TEXT,
-            progress_color=PRIMARY,
-            button_color=TEXT,
-            button_hover_color=ACCENT,
+        # Updates — talks to the PD platform catalog, not the Frag server.
+        updates = card(wrap)
+        updates.pack(fill="x", pady=(0, 16))
+        _section_header(
+            updates, "Updates",
+            "Check Pixelated Dream for a newer version of Frag.",
+        )
+        self.update_status = ctk.CTkLabel(
+            updates,
+            text=f"Current version: {__version__}",
+            font=FONT_DIM, text_color=TEXT_DIM, anchor="w",
+        )
+        self.update_status.pack(fill="x", padx=22, pady=(2, 10))
+        upd_btns = ctk.CTkFrame(updates, fg_color="transparent")
+        upd_btns.pack(fill="x", padx=22, pady=(0, 20))
+        primary_button(
+            upd_btns, text="Check for updates",
+            command=self._check_for_updates,
         ).pack(side="left")
+        self._update_download_btn = ghost_button(
+            upd_btns, text="Download update",
+            command=self._open_update_download, state="disabled",
+        )
+        self._update_download_btn.pack(side="left", padx=(8, 0))
+        self._pending_download_url: str = ""
 
-        # Cloud Sync — replicate settings (sync toggle + per-mod/world selection)
-        # across devices via the Frag bucket.
+        # Cloud Sync — replicate per-mod/world selection across devices
+        # via the Frag bucket.  (Worlds are now synced by default alongside
+        # mods; the old "Also sync worlds" toggle was removed in 0.3.0.)
         cloud = card(wrap)
         cloud.pack(fill="x", pady=(0, 16))
         _section_header(
@@ -2393,7 +2452,6 @@ class SettingsView(View):
         cfg.minecraft_dir = self.mc_var.get().strip()
         cfg.mods_dir = self.mods_var.get().strip()
         cfg.saves_dir = self.saves_var.get().strip()
-        cfg.sync_worlds = bool(self.worlds_var.get())
 
     def _save_all(self) -> None:
         self._collect()
@@ -2403,6 +2461,58 @@ class SettingsView(View):
         self.app.worlds_view.refresh()
         self.app.refresh_connection()
         self.after(2000, lambda: self.save_status.configure(text=""))
+
+    def _check_for_updates(self) -> None:
+        """Ask PD for the latest published Frag version."""
+        self.update_status.configure(
+            text="Checking…", text_color=TEXT_DIM,
+        )
+        self._update_download_btn.configure(state="disabled")
+        self._pending_download_url = ""
+
+        def work():
+            return PDCatalogClient().check_update()
+
+        def done(result):
+            if result is None:
+                self.update_status.configure(
+                    text=(
+                        "Couldn't reach Pixelated Dream.  Check your "
+                        "connection and try again later."
+                    ),
+                    text_color=WARNING,
+                )
+                return
+            if result.update_available:
+                self.update_status.configure(
+                    text=(
+                        f"Update available: {result.latest_version} "
+                        f"(you're on {result.current_version or __version__})"
+                    ),
+                    text_color=PRIMARY,
+                )
+                if result.download_url:
+                    self._pending_download_url = result.download_url
+                    self._update_download_btn.configure(state="normal")
+            else:
+                self.update_status.configure(
+                    text=f"You're up to date.  ({result.current_version or __version__})",
+                    text_color=SUCCESS,
+                )
+
+        def fail(_exc):
+            self.update_status.configure(
+                text="Update check failed.", text_color=WARNING,
+            )
+
+        self.app.run_in_thread(
+            work, on_done=done, on_error=fail, status="Checking PD for updates…",
+        )
+
+    def _open_update_download(self) -> None:
+        if not self._pending_download_url:
+            return
+        webbrowser.open(self._pending_download_url)
 
     def _update_auth_status(self) -> None:
         """Update the displayed authentication status."""
@@ -2572,7 +2682,6 @@ class SettingsView(View):
             )
             self._refresh_cloud_state()
             # Reflect freshly-applied state across the UI
-            self.worlds_var.set(self.app.cfg.sync_worlds)
             self.app.mods_view.refresh_async()
             self.app.worlds_view.refresh()
             self.app.after(2500, lambda: self.cloud_status.configure(text=""))
